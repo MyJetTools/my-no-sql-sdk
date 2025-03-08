@@ -8,4 +8,5 @@ members = [
     "my-no-sql-sdk",
     "my-no-sql-core",
     "my-no-sql-tests",
+    "my-no-sql-server-core",
 ]
