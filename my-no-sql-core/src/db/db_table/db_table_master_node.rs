@@ -159,7 +159,7 @@ mod tests {
 
         let db_row2 = Arc::new(db_row2);
 
-        db_table.insert_or_replace_row(&db_row2, None);
+        db_table.insert_or_replace_row(db_row2.clone(), None);
 
         assert_eq!(db_table.get_table_size(), db_row2.get_src_as_slice().len());
         assert_eq!(db_table.get_partitions_amount(), 1);

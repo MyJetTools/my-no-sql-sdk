@@ -128,14 +128,14 @@ impl DbTable {
     #[inline]
     pub fn insert_or_replace_row(
         &mut self,
-        db_row: &Arc<DbRow>,
+        db_row: Arc<DbRow>,
         #[cfg(feature = "master-node")] set_last_write_moment: Option<DateTimeAsMicroseconds>,
     ) -> (PartitionKey, Option<Arc<DbRow>>) {
-        self.avg_size.add(db_row);
+        self.avg_size.add(&db_row);
 
-        let db_partition = self.partitions.add_partition_if_not_exists(db_row);
+        let db_partition = self.partitions.add_partition_if_not_exists(&db_row);
 
-        let removed_db_row = db_partition.insert_or_replace_row(db_row.clone());
+        let removed_db_row = db_partition.insert_or_replace_row(db_row);
 
         #[cfg(feature = "master-node")]
         if let Some(set_last_write_moment) = set_last_write_moment {
