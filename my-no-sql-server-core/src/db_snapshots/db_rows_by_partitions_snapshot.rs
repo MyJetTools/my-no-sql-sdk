@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use my_no_sql_sdk::core::db::{DbRow, PartitionKey, PartitionKeyParameter};
-use my_no_sql_sdk::core::my_json::json_writer::JsonArrayWriter;
+use my_no_sql_core::db::{DbRow, PartitionKey, PartitionKeyParameter};
+use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
 
 pub struct DbRowsByPartitionsSnapshot {
     pub partitions: Vec<(PartitionKey, Vec<Arc<DbRow>>)>,

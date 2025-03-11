@@ -1,5 +1,5 @@
-use my_no_sql_sdk::core::db::DbTable;
-use my_no_sql_sdk::core::my_json::json_writer::JsonArrayWriter;
+use my_no_sql_core::db::DbTable;
+use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
 #[cfg(feature = "master-node")]
 use rust_extensions::date_time::DateTimeAsMicroseconds;
 

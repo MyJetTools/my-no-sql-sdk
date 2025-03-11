@@ -1,4 +1,4 @@
-use my_no_sql_sdk::core::db::DbTableName;
+use my_no_sql_core::db::DbTableName;
 use tokio::sync::RwLock;
 
 use std::{collections::HashMap, sync::Arc};

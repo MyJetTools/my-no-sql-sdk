@@ -13,7 +13,6 @@ debug_db_row = []
 
 [dependencies]
 my-no-sql-abstractions = { path = "../my-no-sql-abstractions" }
-#my-no-sql-server-core = { path = "../my-no-sql-server-core", optional = true }
 my-json = { tag = "0.3.1", git = "https://github.com/MyJetTools/my-json.git" }
 rust-extensions = { tag = "0.1.5", git = "https://github.com/MyJetTools/rust-extensions.git" }
 tokio = { version = "*", features = ["full"] }
