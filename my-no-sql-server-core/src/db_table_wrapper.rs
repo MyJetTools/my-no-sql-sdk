@@ -6,7 +6,7 @@ use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "master-node")]
-use my_no_sql_sdk::core::db::DbTableAttributes;
+use my_no_sql_core::db::DbTableAttributes;
 
 pub struct DbTableWrapper {
     pub name: DbTableName,
