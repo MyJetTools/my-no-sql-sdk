@@ -11,7 +11,10 @@ data-writer = ["dep:my-no-sql-data-writer"]
 macros = ["dep:my-no-sql-macros", "dep:rust-extensions"]
 data-reader = ["dep:my-no-sql-tcp-reader"]
 tcp-contracts = ["dep:my-no-sql-tcp-shared"]
-master-node = ["my-no-sql-core/master-node", "my-no-sql-server-core"]
+master-node = [
+    "my-no-sql-core/master-node",
+    "my-no-sql-server-core/master-node",
+]
 debug_db_row = ["my-no-sql-core/debug_db_row"]
 with-ssh = ["my-no-sql-data-writer?/with-ssh"]
 

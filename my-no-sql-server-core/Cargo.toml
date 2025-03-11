@@ -12,6 +12,7 @@ master-node = ["my-no-sql-core/master-node"]
 rust-extensions = { tag = "0.1.5", git = "https://github.com/MyJetTools/rust-extensions.git", features = [
     "with-tokio",
     "base64",
+
 ] }
 tokio = { version = "*", features = ["full"] }
 my-no-sql-core = { path = "../my-no-sql-core" }
