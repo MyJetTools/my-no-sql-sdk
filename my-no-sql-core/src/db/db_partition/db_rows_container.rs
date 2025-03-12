@@ -152,7 +152,7 @@ fn are_expires_the_same(
 
 #[cfg(feature = "master-node")]
 #[cfg(test)]
-mod tests {
+mod expiration_tests {
 
     use rust_extensions::date_time::DateTimeAsMicroseconds;
 

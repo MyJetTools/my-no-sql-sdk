@@ -3,10 +3,10 @@ use tokio::sync::RwLock;
 
 use std::{collections::HashMap, sync::Arc};
 
-use super::DbTableWrapper;
+use super::DbTable;
 
 pub struct DbInstance {
-    pub tables: RwLock<HashMap<String, Arc<DbTableWrapper>>>,
+    pub tables: RwLock<HashMap<String, Arc<DbTable>>>,
 }
 
 impl DbInstance {
@@ -26,7 +26,7 @@ impl DbInstance {
             .collect();
     }
 
-    pub async fn get_tables(&self) -> Vec<Arc<DbTableWrapper>> {
+    pub async fn get_tables(&self) -> Vec<Arc<DbTable>> {
         let read_access = self.tables.read().await;
 
         return read_access
@@ -36,14 +36,14 @@ impl DbInstance {
             .collect();
     }
 
-    pub async fn get_table(&self, table_name: &str) -> Option<Arc<DbTableWrapper>> {
+    pub async fn get_table(&self, table_name: &str) -> Option<Arc<DbTable>> {
         let read_access = self.tables.read().await;
 
         let result = read_access.get(table_name)?;
         return Some(result.clone());
     }
 
-    pub async fn delete_table(&self, table_name: &str) -> Option<Arc<DbTableWrapper>> {
+    pub async fn delete_table(&self, table_name: &str) -> Option<Arc<DbTable>> {
         let mut write_access = self.tables.write().await;
         write_access.remove(table_name)
     }

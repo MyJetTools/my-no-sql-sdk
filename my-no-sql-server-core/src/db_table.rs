@@ -8,12 +8,12 @@ use tokio::sync::RwLock;
 #[cfg(feature = "master-node")]
 use my_no_sql_core::db::DbTableAttributes;
 
-pub struct DbTableWrapper {
+pub struct DbTable {
     pub name: DbTableName,
     pub data: RwLock<DbTableInner>,
 }
 
-impl DbTableWrapper {
+impl DbTable {
     pub fn new(db_table: DbTableInner) -> Arc<Self> {
         let result = Self {
             name: db_table.name.clone(),
