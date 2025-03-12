@@ -111,7 +111,7 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
                 self.amount -= 1;
             }
             Err(_) => {
-                //todo!("Removed - but I have to return it");
+                //todo!("Removed - but I have to return it. At least unit test it");
                 println!(
                     "Somehow we did not find the index for expiration moment {} of '{}'. Expiration moment as rfc3339 is {}",
                     expiration_moment.unix_microseconds, key_as_str, expiration_moment.to_rfc3339()
