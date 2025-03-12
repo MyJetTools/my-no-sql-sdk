@@ -75,7 +75,7 @@ where
         &'s self,
         partition_key: &'s str,
         row_key: &'s str,
-    ) -> GetEntityBuilder<TMyNoSqlEntity> {
+    ) -> GetEntityBuilder<'s, TMyNoSqlEntity> {
         GetEntityBuilder::new_mock(partition_key, row_key, self.inner.clone())
     }
 
