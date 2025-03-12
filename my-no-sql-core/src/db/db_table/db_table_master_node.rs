@@ -5,7 +5,9 @@ use rust_extensions::{
 
 use crate::db::PartitionKey;
 
-use super::{AvgSize, DataToGc, DbPartitionsContainer, DbTable, DbTableAttributes, DbTableName};
+use super::{
+    AvgSize, DataToGc, DbPartitionsContainer, DbTableAttributes, DbTableInner, DbTableName,
+};
 
 pub struct PartitionLastWriteMoment {
     pub partition_key: PartitionKey,
@@ -18,7 +20,7 @@ impl EntityWithStrKey for PartitionLastWriteMoment {
     }
 }
 
-impl DbTable {
+impl DbTableInner {
     pub fn new(name: DbTableName, attributes: DbTableAttributes) -> Self {
         Self {
             name,
@@ -105,7 +107,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        db::DbTable,
+        db::DbTableInner,
         db_json_entity::{DbJsonEntity, JsonTimeStamp},
     };
 
@@ -113,7 +115,8 @@ mod tests {
 
     #[test]
     fn test_insert_record() {
-        let mut db_table = DbTable::new("test-table".into(), DbTableAttributes::create_default());
+        let mut db_table =
+            DbTableInner::new("test-table".into(), DbTableAttributes::create_default());
 
         let now = JsonTimeStamp::now();
 
@@ -134,7 +137,8 @@ mod tests {
 
     #[test]
     fn test_insert_and_insert_or_replace() {
-        let mut db_table = DbTable::new("test-table".into(), DbTableAttributes::create_default());
+        let mut db_table =
+            DbTableInner::new("test-table".into(), DbTableAttributes::create_default());
 
         let now = JsonTimeStamp::now();
 

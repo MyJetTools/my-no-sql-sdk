@@ -10,7 +10,7 @@ use crate::db::{DbPartition, DbRow, PartitionKey, PartitionKeyParameter, RowKeyP
 use super::DbTableAttributes;
 use super::{AllDbRowsIterator, AvgSize, ByRowKeyIterator, DbPartitionsContainer, DbTableName};
 
-pub struct DbTable {
+pub struct DbTableInner {
     pub name: DbTableName,
     pub partitions: DbPartitionsContainer,
     pub avg_size: AvgSize,
@@ -20,13 +20,13 @@ pub struct DbTable {
     pub attributes: DbTableAttributes,
 }
 
-impl EntityWithStrKey for DbTable {
+impl EntityWithStrKey for DbTableInner {
     fn get_key(&self) -> &str {
         self.name.as_str()
     }
 }
 
-impl DbTable {
+impl DbTableInner {
     #[cfg(not(feature = "master-node"))]
     pub fn new(name: DbTableName) -> Self {
         Self {
@@ -124,7 +124,7 @@ impl DbTable {
 
 /// Insert Operations
 
-impl DbTable {
+impl DbTableInner {
     #[inline]
     pub fn insert_or_replace_row(
         &mut self,
@@ -204,7 +204,7 @@ impl DbTable {
 ///
 ///
 
-impl DbTable {
+impl DbTableInner {
     pub fn remove_row(
         &mut self,
         partition_key: &impl PartitionKeyParameter,

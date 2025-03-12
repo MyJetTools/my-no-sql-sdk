@@ -1,4 +1,4 @@
-use my_no_sql_core::db::DbTable;
+use my_no_sql_core::db::DbTableInner;
 use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
 #[cfg(feature = "master-node")]
 use rust_extensions::date_time::DateTimeAsMicroseconds;
@@ -16,7 +16,7 @@ pub struct DbTableSnapshot {
 impl DbTableSnapshot {
     pub fn new(
         #[cfg(feature = "master-node")] last_write_moment: DateTimeAsMicroseconds,
-        db_table: &DbTable,
+        db_table: &DbTableInner,
     ) -> Self {
         let mut by_partition = Vec::new();
 

@@ -10,11 +10,11 @@ use my_no_sql_core::db::DbTableAttributes;
 
 pub struct DbTableWrapper {
     pub name: DbTableName,
-    pub data: RwLock<DbTable>,
+    pub data: RwLock<DbTableInner>,
 }
 
 impl DbTableWrapper {
-    pub fn new(db_table: DbTable) -> Arc<Self> {
+    pub fn new(db_table: DbTableInner) -> Arc<Self> {
         let result = Self {
             name: db_table.name.clone(),
             data: RwLock::new(db_table),
@@ -87,7 +87,7 @@ impl DbTableWrapper {
     }
 }
 
-fn get_partitions_snapshot(db_table: &DbTable) -> Vec<DbPartitionSnapshot> {
+fn get_partitions_snapshot(db_table: &DbTableInner) -> Vec<DbPartitionSnapshot> {
     let mut result = Vec::with_capacity(db_table.partitions.len());
 
     for db_partition in db_table.partitions.get_partitions() {
