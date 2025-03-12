@@ -107,16 +107,17 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
                 if let Some(remove_index) = remove_index {
                     self.index.remove(remove_index);
                 }
+
+                self.amount -= 1;
             }
             Err(_) => {
-                panic!(
+                //todo!("Removed - but I have to return it");
+                println!(
                     "Somehow we did not find the index for expiration moment {} of '{}'. Expiration moment as rfc3339 is {}",
                     expiration_moment.unix_microseconds, key_as_str, expiration_moment.to_rfc3339()
                 );
             }
         }
-
-        self.amount -= 1;
     }
 
     pub fn get_items_to_expire<TResult>(
