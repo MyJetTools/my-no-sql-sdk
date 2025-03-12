@@ -15,6 +15,9 @@ master-node = [
     "my-no-sql-core/master-node",
     "my-no-sql-server-core/master-node",
 ]
+
+read-node = ["my-no-sql-server-core"]
+
 debug_db_row = ["my-no-sql-core/debug_db_row"]
 with-ssh = ["my-no-sql-data-writer?/with-ssh"]
 

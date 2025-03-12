@@ -18,3 +18,6 @@ pub extern crate my_no_sql_tcp_shared as tcp_contracts;
 
 #[cfg(feature = "master-node")]
 pub extern crate my_no_sql_server_core as server;
+
+#[cfg(feature = "read-node")]
+pub extern crate my_no_sql_server_core as server;
