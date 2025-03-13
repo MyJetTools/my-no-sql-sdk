@@ -69,13 +69,17 @@ impl DbRowsContainer {
 
     pub fn insert(&mut self, db_row: Arc<DbRow>) -> Option<Arc<DbRow>> {
         #[cfg(feature = "master-node")]
-        self.rows_with_expiration_index.add(&db_row);
+        let added = self.rows_with_expiration_index.add(&db_row);
 
         let (_, removed_db_row) = self.data.insert_or_replace(db_row);
 
         #[cfg(feature = "master-node")]
-        if let Some(removed_db_row) = &removed_db_row {
-            self.rows_with_expiration_index.remove(removed_db_row);
+        if let Some(added) = added {
+            if added {
+                if let Some(removed_db_row) = &removed_db_row {
+                    self.rows_with_expiration_index.remove(removed_db_row);
+                }
+            }
         }
 
         removed_db_row
@@ -176,7 +180,7 @@ mod expiration_tests {
 
         db_rows.insert(Arc::new(db_row));
 
-        assert_eq!(1, db_rows.rows_with_expiration_index.len())
+        db_rows.rows_with_expiration_index.assert_len(1);
     }
 
     #[test]
@@ -194,7 +198,7 @@ mod expiration_tests {
 
         db_rows.insert(Arc::new(db_row));
 
-        assert_eq!(0, db_rows.rows_with_expiration_index.len())
+        db_rows.rows_with_expiration_index.assert_len(0);
     }
 
     #[test]
@@ -214,7 +218,7 @@ mod expiration_tests {
 
         db_rows.remove("test");
 
-        assert_eq!(0, db_rows.rows_with_expiration_index.len())
+        db_rows.rows_with_expiration_index.assert_len(0);
     }
 
     #[test]
@@ -233,7 +237,7 @@ mod expiration_tests {
 
         db_rows.insert(Arc::new(db_row));
 
-        assert_eq!(0, db_rows.rows_with_expiration_index.len());
+        db_rows.rows_with_expiration_index.assert_len(0);
 
         let new_expiration_time = DateTimeAsMicroseconds::new(2);
 
@@ -245,7 +249,7 @@ mod expiration_tests {
                 .rows_with_expiration_index
                 .has_data_with_expiration_moment(DateTimeAsMicroseconds::new(2))
         );
-        assert_eq!(1, db_rows.rows_with_expiration_index.len());
+        db_rows.rows_with_expiration_index.assert_len(1);
     }
 
     #[test]
@@ -272,7 +276,7 @@ mod expiration_tests {
                 .rows_with_expiration_index
                 .has_data_with_expiration_moment(current_expiration)
         );
-        assert_eq!(1, db_rows.rows_with_expiration_index.len());
+        db_rows.rows_with_expiration_index.assert_len(1);
 
         db_rows.update_expiration_time("test", Some(DateTimeAsMicroseconds::new(2)));
 
@@ -282,7 +286,8 @@ mod expiration_tests {
                 .rows_with_expiration_index
                 .has_data_with_expiration_moment(DateTimeAsMicroseconds::new(2))
         );
-        assert_eq!(1, db_rows.rows_with_expiration_index.len());
+
+        db_rows.rows_with_expiration_index.assert_len(1);
     }
 
     #[test]
@@ -437,5 +442,49 @@ mod expiration_tests {
         let db_rows_to_gc = db_rows.get_rows_to_gc_by_max_amount(3).unwrap();
 
         assert_eq!("test1", db_rows_to_gc.get(0).unwrap().get_row_key());
+    }
+
+    #[test]
+    fn check_we_update_row_with_the_same_expiration_date() {
+        let mut db_rows = DbRowsContainer::new();
+
+        let row = r#"{"Count":1,"PartitionKey":"in-progress-count1","RowKey":"my-id","Expires":"2025-03-12T10:55:46.0507979Z"}"#;
+        let now = JsonTimeStamp::now();
+        let db_json_entity = DbJsonEntity::parse(row.as_bytes(), &now).unwrap();
+        let db_row = Arc::new(db_json_entity.into_db_row().unwrap());
+        db_rows.insert(db_row);
+        db_rows.rows_with_expiration_index.assert_len(1);
+
+        let row = r#"{"Count":1,"PartitionKey":"in-progress-count1","RowKey":"my-id","Expires":"2025-03-12T10:55:46.0507979Z"}"#;
+        let now = JsonTimeStamp::now();
+        let db_json_entity = DbJsonEntity::parse(row.as_bytes(), &now).unwrap();
+        let db_row = Arc::new(db_json_entity.into_db_row().unwrap());
+        db_rows.insert(db_row);
+        db_rows.rows_with_expiration_index.assert_len(1);
+
+        db_rows.remove("my-id");
+    }
+
+    #[test]
+    fn check_we_update_same_row_with_new_expiration_date() {
+        let mut db_rows = DbRowsContainer::new();
+
+        let row = r#"{"Count":1,"PartitionKey":"in-progress-count1","RowKey":"my-id","Expires":"2025-03-12T10:55:48.0507979Z"}"#;
+        let now = JsonTimeStamp::now();
+        let db_json_entity = DbJsonEntity::parse(row.as_bytes(), &now).unwrap();
+        let db_row = Arc::new(db_json_entity.into_db_row().unwrap());
+        db_rows.insert(db_row);
+        db_rows.rows_with_expiration_index.assert_len(1);
+
+        let row = r#"{"Count":1,"PartitionKey":"in-progress-count1","RowKey":"my-id","Expires":"2025-03-12T10:55:50.0507979Z"}"#;
+        let now = JsonTimeStamp::now();
+        let db_json_entity = DbJsonEntity::parse(row.as_bytes(), &now).unwrap();
+        let db_row = Arc::new(db_json_entity.into_db_row().unwrap());
+        db_rows.insert(db_row);
+        db_rows.rows_with_expiration_index.assert_len(1);
+
+        db_rows.remove("my-id");
+
+        db_rows.rows_with_expiration_index.assert_len(0);
     }
 }

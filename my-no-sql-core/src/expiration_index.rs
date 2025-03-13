@@ -48,27 +48,43 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
         })
     }
 
-    pub fn add(&mut self, item: &impl ExpirationIndex<TOwnedType>) {
+    pub fn add(&mut self, item: &impl ExpirationIndex<TOwnedType>) -> Option<bool> {
         let expiration_moment = item.get_expiration_moment();
         if item.get_expiration_moment().is_none() {
-            return;
+            return None;
         }
 
         let expiration_moment = expiration_moment.unwrap();
 
-        match self.find_index(expiration_moment) {
+        let added = match self.find_index(expiration_moment) {
             Ok(index) => {
-                self.index[index].items.push(item.to_owned());
+                let items = &mut self.index[index].items;
+
+                if items
+                    .iter()
+                    .any(|itm| item.get_id_as_str() == itm.get_id_as_str())
+                {
+                    false
+                } else {
+                    self.index[index].items.push(item.to_owned());
+                    false
+                }
             }
             Err(index) => {
                 self.index.insert(
                     index,
                     ExpirationIndexItem::new(expiration_moment, item.to_owned()),
                 );
+
+                true
             }
+        };
+
+        if added {
+            self.amount += 1;
         }
 
-        self.amount += 1;
+        Some(added)
     }
 
     pub fn update(
@@ -80,7 +96,7 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
             self.do_remove(old_expires, itm.get_id_as_str());
         }
 
-        self.add(itm)
+        let added = self.add(itm);
     }
 
     pub fn remove(&mut self, itm: &impl ExpirationIndex<TOwnedType>) {
@@ -111,8 +127,14 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
                 self.amount -= 1;
             }
             Err(_) => {
-                //todo!("Removed - but I have to return it. At least unit test it");
+                #[cfg(not(test))]
                 println!(
+                    "Somehow we did not find the index for expiration moment {} of '{}'. Expiration moment as rfc3339 is {}",
+                    expiration_moment.unix_microseconds, key_as_str, expiration_moment.to_rfc3339()
+                );
+
+                #[cfg(test)]
+                panic!(
                     "Somehow we did not find the index for expiration moment {} of '{}'. Expiration moment as rfc3339 is {}",
                     expiration_moment.unix_microseconds, key_as_str, expiration_moment.to_rfc3339()
                 );
@@ -152,6 +174,19 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
 
     pub fn clear(&mut self) {
         self.index.clear();
+    }
+
+    #[cfg(test)]
+    pub fn assert_len(&self, len: usize) {
+        assert_eq!(self.len(), len);
+
+        let mut calculated_len = 0;
+
+        for itm in self.index.iter() {
+            calculated_len += itm.items.len();
+        }
+
+        assert_eq!(calculated_len, len);
     }
 }
 
