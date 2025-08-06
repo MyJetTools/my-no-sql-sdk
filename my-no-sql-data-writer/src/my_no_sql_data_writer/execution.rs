@@ -1,4 +1,4 @@
-use flurl::{FlUrl, FlUrlResponse};
+use flurl::{body::FlUrlBody, FlUrl, FlUrlResponse};
 use my_json::{
     json_reader::JsonArrayIterator,
     json_writer::{JsonArrayWriter, RawJsonObject},
@@ -33,7 +33,7 @@ pub async fn create_table_if_not_exists(
 
     let fl_url = params.populate_params(fl_url);
 
-    let mut response = fl_url.post(None).await?;
+    let mut response = fl_url.post(FlUrlBody::Empty).await?;
 
     create_table_errors_handler(&mut response, "create_table_if_not_exists", url).await
 }
@@ -53,7 +53,7 @@ pub async fn create_table(
 
     let fl_url = params.populate_params(fl_url);
 
-    let mut response = fl_url.post(None).await?;
+    let mut response = fl_url.post(FlUrlBody::Empty).await?;
 
     create_table_errors_handler(&mut response, "create_table", url).await
 }
@@ -68,7 +68,7 @@ pub async fn insert_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sy
         .append_path_segment("Insert")
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
-        .post(entity.serialize_entity().into())
+        .post(FlUrlBody::new_as_json(entity.serialize_entity()))
         .await?;
 
     if is_ok_result(&response) {
@@ -94,7 +94,7 @@ pub async fn insert_or_replace_entity<
         .append_path_segment("InsertOrReplace")
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
-        .post(entity.into())
+        .post(FlUrlBody::new_as_json(entity))
         .await?;
 
     if is_ok_result(&response) {

@@ -111,7 +111,7 @@ async fn ping_loop() {
                     .with_retries(3)
                     .append_path_segment("api")
                     .append_path_segment("ping")
-                    .post_json(&ping_model)
+                    .post(&ping_model)
                     .await;
 
                 if let Err(err) = &fl_url_response {
