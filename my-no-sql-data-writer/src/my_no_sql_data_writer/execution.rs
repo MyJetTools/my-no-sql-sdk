@@ -483,9 +483,9 @@ fn is_ok_result(response: &FlUrlResponse) -> bool {
 
 fn serialize_entities_to_body<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer>(
     entities: &[TEntity],
-) -> Option<Vec<u8>> {
+) -> FlUrlBody {
     if entities.len() == 0 {
-        return Some(vec![b'[', b']']);
+        FlUrlBody::new_as_json(vec![b'[', b']']);
     }
 
     let mut json_array_writer = JsonArrayWriter::new();
@@ -496,7 +496,7 @@ fn serialize_entities_to_body<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer>(
         json_array_writer.write(payload);
     }
 
-    Some(json_array_writer.build().into_bytes())
+    FlUrlBody::new_as_json(json_array_writer.build().into_bytes())
 }
 
 async fn check_error(response: &mut FlUrlResponse) -> Result<(), DataWriterError> {
@@ -678,8 +678,8 @@ mod tests {
             },
         ];
 
-        let as_json = super::serialize_entities_to_body(&entities).unwrap();
+        let as_json = super::serialize_entities_to_body(&entities);
 
-        println!("{}", std::str::from_utf8(&as_json).unwrap());
+        println!("{}", std::str::from_utf8(as_json.as_slice()).unwrap());
     }
 }
