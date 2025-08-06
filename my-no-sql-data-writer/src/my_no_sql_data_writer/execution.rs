@@ -118,13 +118,21 @@ pub async fn bulk_insert_or_replace<
         return Ok(());
     }
 
+    let mut debug_data = String::new();
+
     let response = flurl
         .append_path_segment(BULK_CONTROLLER)
         .append_path_segment("InsertOrReplace")
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
-        .post(serialize_entities_to_body(entities))
+        .post_with_debug(serialize_entities_to_body(entities), &mut debug_data)
         .await?;
+
+    if debug_data.len() > 1024 {
+        println!("Debug Data: {}", &debug_data[..1024]);
+    } else {
+        println!("Debug Data: {}", debug_data);
+    }
 
     if is_ok_result(&response) {
         return Ok(());
