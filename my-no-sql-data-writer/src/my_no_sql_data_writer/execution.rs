@@ -68,7 +68,7 @@ pub async fn insert_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sy
         .append_path_segment("Insert")
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
-        .post(FlUrlBody::new_as_json(entity.serialize_entity()))
+        .post(FlUrlBody::Json(entity.serialize_entity()))
         .await?;
 
     if is_ok_result(&response) {
@@ -94,7 +94,7 @@ pub async fn insert_or_replace_entity<
         .append_path_segment("InsertOrReplace")
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
-        .post(FlUrlBody::new_as_json(entity))
+        .post(FlUrlBody::Json(entity))
         .await?;
 
     if is_ok_result(&response) {
@@ -485,7 +485,7 @@ fn serialize_entities_to_body<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer>(
     entities: &[TEntity],
 ) -> FlUrlBody {
     if entities.len() == 0 {
-        FlUrlBody::new_as_json(vec![b'[', b']']);
+        FlUrlBody::Json(vec![b'[', b']']);
     }
 
     let mut json_array_writer = JsonArrayWriter::new();
@@ -496,7 +496,7 @@ fn serialize_entities_to_body<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer>(
         json_array_writer.write(payload);
     }
 
-    FlUrlBody::new_as_json(json_array_writer.build().into_bytes())
+    FlUrlBody::Json(json_array_writer.build().into_bytes())
 }
 
 async fn check_error(response: &mut FlUrlResponse) -> Result<(), DataWriterError> {

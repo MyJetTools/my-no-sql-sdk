@@ -32,11 +32,11 @@ impl DbPartitionsContainer {
         self.partitions.len()
     }
 
-    pub fn get_partitions(&self) -> std::slice::Iter<DbPartition> {
+    pub fn get_partitions<'s>(&'s self) -> std::slice::Iter<'s, DbPartition> {
         self.partitions.iter()
     }
 
-    pub fn get_partitions_mut(&mut self) -> std::slice::IterMut<DbPartition> {
+    pub fn get_partitions_mut<'s>(&'s mut self) -> std::slice::IterMut<'s, DbPartition> {
         self.partitions.iter_mut()
     }
     #[cfg(feature = "master-node")]

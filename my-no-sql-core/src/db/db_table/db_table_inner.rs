@@ -117,7 +117,7 @@ impl DbTableInner {
         self.partitions.get(partition_key)
     }
     #[inline]
-    pub fn get_partitions(&self) -> std::slice::Iter<DbPartition> {
+    pub fn get_partitions<'s>(&'s self) -> std::slice::Iter<'s, DbPartition> {
         self.partitions.get_partitions()
     }
 }
