@@ -38,7 +38,7 @@ impl DbTableSnapshot {
 
         for db_partition_snapshot in self.by_partition.iter() {
             for db_row in &db_partition_snapshot.db_rows_snapshot.db_rows {
-                json_array_writer.write(db_row.as_ref());
+                json_array_writer = json_array_writer.write(db_row.as_ref());
             }
         }
 

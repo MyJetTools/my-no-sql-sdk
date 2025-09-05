@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use my_json::json_writer::JsonObject;
+use my_json::json_writer::JsonValueWriter;
 #[cfg(feature = "master-node")]
 use rust_extensions::date_time::AtomicDateTimeAsMicroseconds;
 #[cfg(feature = "master-node")]
@@ -269,8 +269,10 @@ fn find_json_separator_after(src: &[u8], pos: usize) -> Option<usize> {
     None
 }
 
-impl JsonObject for &'_ DbRow {
-    fn write_into(&self, dest: &mut String) {
+impl JsonValueWriter for &'_ DbRow {
+    const IS_ARRAY: bool = false;
+
+    fn write(&self, dest: &mut String) {
         self.write_json(dest)
     }
 }

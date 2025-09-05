@@ -1,4 +1,4 @@
-use my_json::json_writer::JsonObject;
+use my_json::json_writer::JsonValueWriter;
 
 #[cfg(feature = "master-node")]
 use rust_extensions::date_time::AtomicDateTimeAsMicroseconds;
@@ -200,8 +200,9 @@ impl DbPartition {
     }
 }
 
-impl JsonObject for &'_ DbPartition {
-    fn write_into(&self, dest: &mut String) {
+impl JsonValueWriter for &'_ DbPartition {
+    const IS_ARRAY: bool = false;
+    fn write(&self, dest: &mut String) {
         let mut first_element = true;
         dest.push('[');
         for db_row in self.rows.get_all() {
@@ -210,7 +211,7 @@ impl JsonObject for &'_ DbPartition {
             } else {
                 dest.push(',');
             }
-            db_row.as_ref().write_into(dest)
+            db_row.as_ref().write(dest)
         }
         dest.push(']');
     }

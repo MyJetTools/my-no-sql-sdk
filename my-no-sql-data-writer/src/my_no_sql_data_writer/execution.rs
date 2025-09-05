@@ -493,7 +493,7 @@ fn serialize_entities_to_body<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer>(
     for entity in entities {
         let payload = entity.serialize_entity();
         let payload: RawJsonObject = payload.into();
-        json_array_writer.write(payload);
+        json_array_writer = json_array_writer.write(payload);
     }
 
     FlUrlBody::Json(json_array_writer.build().into_bytes())

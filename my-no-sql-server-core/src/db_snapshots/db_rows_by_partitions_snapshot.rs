@@ -52,7 +52,7 @@ impl DbRowsByPartitionsSnapshot {
         let mut json_array_writer = JsonArrayWriter::new();
         for (_, snapshot) in self.partitions.iter() {
             for db_row in snapshot {
-                json_array_writer.write(db_row.as_ref());
+                json_array_writer = json_array_writer.write(db_row.as_ref());
             }
         }
 
