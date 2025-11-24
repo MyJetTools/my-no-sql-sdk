@@ -86,7 +86,7 @@ async fn ping_loop() {
                 let url = settings.get_url().await;
                 let entry = url_to_ping
                     .entry(url)
-                    .or_insert_with(|| ((settings.clone(), Vec::new())));
+                    .or_insert_with(|| (settings.clone(), Vec::new()));
                 entry.1.push(table.to_string());
             }
 

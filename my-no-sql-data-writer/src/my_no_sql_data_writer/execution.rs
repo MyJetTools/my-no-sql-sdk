@@ -680,6 +680,8 @@ mod tests {
 
         let as_json = super::serialize_entities_to_body(&entities);
 
-        println!("{}", std::str::from_utf8(as_json.as_slice()).unwrap());
+        let body = as_json.into_vec();
+
+        println!("{}", std::str::from_utf8(&body).unwrap());
     }
 }
