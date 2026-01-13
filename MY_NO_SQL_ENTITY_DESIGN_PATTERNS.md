@@ -143,6 +143,7 @@
   - Prefer stable identifiers (ids, symbols, timestamps encoded consistently).
 - TimeStamp:
   - Auto-managed; used by server for last-write tracking and sync ordering.
+  - **Important**: When creating a new entity instance, do not set the current timestamp manually. The server will automatically set the timestamp when the entity is written. Always initialize `time_stamp` with `Default::default()`.
 - Expires (TTL):
   - Use for session-like or cache-like data; choose UTC epoch milliseconds.
 
@@ -177,6 +178,89 @@
           }
       }
   }
+  ```
+
+### Best practices: timestamp initialization
+- **Never set the current timestamp manually** when creating a `MyNoSqlEntity` instance. The server automatically assigns the timestamp when the entity is written or updated.
+- Always initialize `time_stamp` with `Default::default()` in constructors, `Default` implementations, or when manually creating entity instances.
+- Example - Complete initialization patterns:
+  ```rust
+  use my_no_sql_macros::my_no_sql_entity;
+  use serde::{Deserialize, Serialize};
+
+  #[my_no_sql_entity("user-profiles")]
+  #[derive(Serialize, Deserialize, Debug, Clone)]
+  pub struct UserProfileEntity {
+      pub user_name: String,
+      pub email: String,
+      pub age: u32,
+  }
+
+  impl UserProfileEntity {
+      // ✅ Correct: Helper function for creating new instances
+      pub fn new(user_name: String, email: String, age: u32) -> Self {
+          Self {
+              partition_key: user_name.clone(),
+              row_key: "profile".to_string(),
+              time_stamp: Default::default(), // ✅ Server will set timestamp on write
+              user_name,
+              email,
+              age,
+          }
+      }
+
+      // ✅ Correct: Creating with specific keys
+      pub fn create(user_id: &str, email: String, age: u32) -> Self {
+          Self {
+              partition_key: user_id.to_string(),
+              row_key: "profile".to_string(),
+              time_stamp: Default::default(), // ✅ Always use Default::default()
+              user_name: user_id.to_string(),
+              email,
+              age,
+          }
+      }
+  }
+
+  impl Default for UserProfileEntity {
+      fn default() -> Self {
+          Self {
+              partition_key: "default".to_string(),
+              row_key: "profile".to_string(),
+              time_stamp: Default::default(), // ✅ Correct: server will set timestamp
+              user_name: "".to_string(),
+              email: "".to_string(),
+              age: 0,
+          }
+      }
+  }
+
+  // Usage examples:
+  // ✅ Correct: Using Default
+  let entity1 = UserProfileEntity::default();
+
+  // ✅ Correct: Using helper function
+  let entity2 = UserProfileEntity::new("john".to_string(), "john@example.com".to_string(), 30);
+
+  // ✅ Correct: Manual initialization
+  let entity3 = UserProfileEntity {
+      partition_key: "user-123".to_string(),
+      row_key: "profile".to_string(),
+      time_stamp: Default::default(), // ✅ Always use Default::default()
+      user_name: "john".to_string(),
+      email: "john@example.com".to_string(),
+      age: 30,
+  };
+
+  // ❌ WRONG: Never do this
+  // let entity_wrong = UserProfileEntity {
+  //     partition_key: "user-123".to_string(),
+  //     row_key: "profile".to_string(),
+  //     time_stamp: Timestamp::now(), // ❌ Server will overwrite this anyway
+  //     user_name: "john".to_string(),
+  //     email: "john@example.com".to_string(),
+  //     age: 30,
+  // };
   ```
 
 ### Best practices: meaningful keys as helpers
@@ -268,11 +352,13 @@ pub struct DeleteEvent {
 - Apply `#[serde(rename_all = "...")]` for payload fields.
 - Never introduce fields named `PartitionKey`, `RowKey`, `TimeStamp`, `Expires` manually unless following macro requirements.
 - For TTL needs, prefer `with_expires = true` over a custom `expires` unless special handling is required.
+- **Always initialize `time_stamp` with `Default::default()`**—never set the current timestamp manually; the server handles timestamp assignment.
 - Derive `Serialize`, `Deserialize`, and `Clone`; add `Debug` when useful for logs/tests.
 - Provide unit tests that round-trip entities and assert variant unwraps.
 
 ### Anti-patterns to avoid
 - Manually defining partition/row/timestamp fields when using the macros (causes duplication or serde conflicts).
+- **Setting the current timestamp manually** when creating entity instances (e.g., `time_stamp: Timestamp::now()`). The server sets timestamps automatically; use `Default::default()` instead.
 - Reusing the same `(partition_key, row_key)` for multiple variants in enum models.
 - Using dynamic keys in enum models (keys must be compile-time constants in attributes).
 - Introducing serde renames that clash with reserved casing tokens.
