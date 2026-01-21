@@ -6,7 +6,7 @@ use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEn
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MyNoSqlDataWriterWithRetries, MyNoSqlWriterSettings};
+use crate::{MyNoSqlDataWriterBuilder, MyNoSqlDataWriterWithRetries, MyNoSqlWriterSettings};
 
 use super::{fl_url_factory::FlUrlFactory, DataWriterError, UpdateReadStatistics};
 
@@ -47,6 +47,11 @@ pub struct MyNoSqlDataWriter<TEntity: MyNoSqlEntity + Sync + Send> {
 }
 
 impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlDataWriter<TEntity> {
+    pub fn create_with_builder(
+        settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
+    ) -> MyNoSqlDataWriterBuilder<TEntity> {
+        MyNoSqlDataWriterBuilder::new(settings)
+    }
     pub fn new(
         settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
         auto_create_table_params: Option<CreateTableParams>,
