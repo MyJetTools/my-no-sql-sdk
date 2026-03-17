@@ -256,3 +256,12 @@ app.my_entity_reader
     .await;
 ```
 
+### Rules (in case of full reload to local cache)
+
+| Rule | Why |
+|---|---|
+| **ALWAYS** `tokio::spawn` in callback | Callback must not block the NoSql reader |
+| Reload script takes `Arc<AppContext>` (owned) | Required for `tokio::spawn` — move semantics |
+| **ALWAYS** full reload, not incremental | Simpler, more reliable, no edge cases with event ordering |
+| Callback lives in `scripts/` | Not a flow — no HTTP/gRPC context |
+| Cache must have a `reload_all` method | Clears and re-populates from an iterator |
