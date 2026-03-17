@@ -1,30 +1,25 @@
-# Предлагаемые изменения к my-no-sql-entity-design-patterns.md
+## 1. Reader & Writer overview
 
-Этот документ описывает чистый my-no-sql-sdk — БЕЗ service-sdk.
-Всё что связано с service-sdk (use_my_no_sql_entity!(), фичи service-sdk, ServiceContext) — отдельный документ.
-
-## 1. Добавить раздел: Reader & Writer overview
-
-После "Where entities live and how they flow" добавить полноценный раздел с API.
+After "Where entities live and how they flow" add a full section with API.
 
 ### Writer (my-no-sql-data-writer)
 
-HTTP writer — отправляет запросы к MyNoSql server.
+HTTP writer — sends requests to MyNoSql server.
 
-**Crate:** `my-no-sql-data-writer` (или через `my-no-sql-sdk` с feature `data-writer`)
+**Crate:** `my-no-sql-data-writer` (or via `my-no-sql-sdk` with feature `data-writer`)
 
 #### MyNoSqlWriterSettings trait
 
 ```rust
 #[async_trait::async_trait]
 pub trait MyNoSqlWriterSettings {
-    async fn get_url(&self) -> String;       // URL MyNoSql сервера (HTTP)
+    async fn get_url(&self) -> String;       // MyNoSql server URL (HTTP)
     fn get_app_name(&self) -> &'static str;
     fn get_app_version(&self) -> &'static str;
 }
 ```
 
-#### Создание writer
+#### Creating a writer
 
 ```rust
 use my_no_sql_sdk::{
@@ -35,28 +30,28 @@ use my_no_sql_sdk::{
 let writer = MyNoSqlDataWriter::<InstrumentEntity>::new(
     settings_reader.clone(),   // Arc<dyn MyNoSqlWriterSettings + Send + Sync>
     Some(CreateTableParams {
-        persist: true,                        // сохранять на диск
-        max_partitions_amount: None,          // None = без лимита
+        persist: true,                        // persist to disk
+        max_partitions_amount: None,          // None = no limit
         max_rows_per_partition_amount: None,
     }),
-    DataSynchronizationPeriod::Immediately,   // как быстро reader увидит изменения
+    DataSynchronizationPeriod::Immediately,   // how fast reader sees changes
 );
 ```
 
-#### with_retries — ОБЯЗАТЕЛЬНО
+#### with_retries — REQUIRED
 
-**НИКОГДА** не вызывать методы на writer напрямую. Всегда через `.with_retries(N)`:
+**NEVER** call methods on writer directly. Always via `.with_retries(N)`:
 
 ```rust
-// ✅ CORRECT — через with_retries
+// ✅ CORRECT — via with_retries
 let writer_with_retries = writer.with_retries(3);
 writer_with_retries.insert_or_replace_entity(&entity).await.unwrap();
 
-// ❌ WRONG — напрямую
+// ❌ WRONG — directly
 writer.insert_or_replace_entity(&entity).await.unwrap();
 ```
 
-Паттерн в AppContext:
+AppContext pattern:
 ```rust
 pub struct AppContext {
     instruments: MyNoSqlDataWriter<InstrumentEntity>,
@@ -90,36 +85,36 @@ let items = w.get_by_partition_key("pk", None).await.unwrap().unwrap_or_default(
 w.delete_row("partition_key", "row_key").await.unwrap();
 ```
 
-**Важно:** Writer возвращает **owned T** (не Arc), обёрнутый в `Result<Option<T>, DataWriterError>`.
+**Important:** Writer returns **owned T** (not Arc), wrapped in `Result<Option<T>, DataWriterError>`.
 
 #### DataSynchronizationPeriod
 
-| Value | Описание |
+| Value | Description |
 |---|---|
-| `Immediately` | Reader увидит изменения ASAP |
-| `Sec1` / `Sec5` / `Sec15` / `Sec30` | Задержка N секунд |
-| `Min1` | 1 минута |
+| `Immediately` | Reader sees changes ASAP |
+| `Sec1` / `Sec5` / `Sec15` / `Sec30` | Delay N seconds |
+| `Min1` | 1 minute |
 | `Asap` | Best-effort |
 
 #### CreateTableParams
 
 ```rust
 CreateTableParams {
-    persist: true,   // true = переживает рестарт сервера
+    persist: true,   // true = survives server restart
     max_partitions_amount: None,
     max_rows_per_partition_amount: None,
 }
 ```
 
-`Some(params)` — автоматически создать таблицу при первой записи. `None` — таблица должна существовать.
+`Some(params)` — auto-create table on first write. `None` — table must already exist.
 
 ---
 
 ### Reader (my-no-sql-tcp-reader)
 
-TCP reader — подписывается на таблицу, держит локальную копию. Чтения — локальные, без сетевых запросов.
+TCP reader — subscribes to a table, keeps a local copy. Reads are local, no network requests.
 
-**Crate:** `my-no-sql-tcp-reader` (или через `my-no-sql-sdk` с feature `data-reader`)
+**Crate:** `my-no-sql-tcp-reader` (or via `my-no-sql-sdk` with feature `data-reader`)
 
 #### Reader API (MyNoSqlDataReaderTcp)
 
@@ -134,21 +129,21 @@ match items {
             // entity: Arc<T>
         }
     }
-    None => { /* partition не найден */ }
+    None => { /* partition not found */ }
 }
 
 // Get one entity → Option<Arc<T>>
 let entity = reader.get_entity("partition_key", "row_key").await;
 ```
 
-**CRITICAL:** `get_by_partition_key` возвращает `Option<Vec<(String, Arc<T>)>>` — **НЕ** `Vec<Arc<T>>`. Всегда деструктурировать tuple.
+**CRITICAL:** `get_by_partition_key` returns `Option<Vec<(String, Arc<T>)>>` — **NOT** `Vec<Arc<T>>`. Always destructure the tuple.
 
 ---
 
-## 2. Добавить раздел: Shared entity crate
+## 2. Shared entity crate
 
-> Entities ДОЛЖНЫ жить в отдельном shared crate. Дублирование entity struct в нескольких проектах — антипаттерн.
-> Reader (сервис) и writer (админка) импортируют один и тот же crate.
+> Entities MUST live in a separate shared crate. Duplicating entity structs across multiple projects is an anti-pattern.
+> Reader (service) and writer (admin) import the same crate.
 
 ```
 my-no-sql-entities/
@@ -173,21 +168,21 @@ my-no-sql-entities = { path = "../my-no-sql-entities" }
 
 ---
 
-## 3. Добавить в "Common Mistakes" / "Anti-patterns"
+## 3. Common Mistakes / Anti-patterns
 
-| Ошибка | Исправление |
+| Mistake | Fix |
 |---|---|
-| Вызывать writer напрямую без retries | Всегда `writer.with_retries(3).method()` |
-| Ожидать `Vec<Arc<T>>` от reader `get_by_partition_key` | Возвращает `Option<Vec<(String, Arc<T>)>>` |
-| Ожидать `Option<Vec<Arc<T>>>` от writer `get_by_partition_key` | Writer возвращает `Result<Option<Vec<T>>>` — owned T, не Arc |
-| Дублировать entity struct в нескольких проектах | Shared crate |
-| Ставить `time_stamp: Timestamp::now()` | Всегда `time_stamp: Default::default()` |
+| Calling writer directly without retries | Always `writer.with_retries(3).method()` |
+| Expecting `Vec<Arc<T>>` from reader `get_by_partition_key` | Returns `Option<Vec<(String, Arc<T>)>>` |
+| Expecting `Option<Vec<Arc<T>>>` from writer `get_by_partition_key` | Writer returns `Result<Option<Vec<T>>>` — owned T, not Arc |
+| Duplicating entity struct across multiple projects | Shared crate |
+| Setting `time_stamp: Timestamp::now()` | Always `time_stamp: Default::default()` |
 
 ---
 
-## 4. Добавить раздел: Reader Change Callbacks
+## 4. Reader Change Callbacks
 
-Когда сервис держит in-memory кэш на основе NoSql данных и должен реагировать на изменения — используй `MyNoSqlDataReaderCallBacks`.
+When a service maintains an in-memory cache based on NoSql data and must react to changes — use `MyNoSqlDataReaderCallBacks`.
 
 ### Trait
 
@@ -199,9 +194,9 @@ pub trait MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> {
 }
 ```
 
-### Паттерн: полная перезагрузка кэша
+### Pattern: full cache reload
 
-При любом event (insert/replace/delete) — полностью перечитать все данные из reader и заменить кэш. Не пытаться делать инкрементальные обновления.
+On any event (insert/replace/delete) — fully re-read all data from the reader and replace the cache. Do not attempt incremental updates.
 
 ```rust
 use std::sync::Arc;
@@ -237,7 +232,7 @@ impl MyNoSqlDataReaderCallBacks<MyEntityNoSqlEntity> for MyEntityNoSqlCallback {
     }
 }
 
-// Скрипт перезагрузки — читает все из reader, заменяет кэш
+// Reload script — reads all from reader, replaces cache
 pub async fn reload_my_entities(app: Arc<AppContext>) {
     let items = app.my_entity_reader
         .get_by_partition_key(MyEntityNoSqlEntity::PARTITION_KEY)
@@ -251,7 +246,7 @@ pub async fn reload_my_entities(app: Arc<AppContext>) {
 }
 ```
 
-### Регистрация — в main.rs после init, до start_application
+### Registration — in main.rs after init, before start_application
 
 ```rust
 use my_no_sql_sdk::reader::MyNoSqlDataReader;
@@ -261,12 +256,3 @@ app.my_entity_reader
     .await;
 ```
 
-### Правила
-
-| Правило | Почему |
-|---|---|
-| **ALWAYS** `tokio::spawn` в callback | Callback не должен блокировать NoSql reader |
-| Reload скрипт принимает `Arc<AppContext>` (owned) | Нужно для `tokio::spawn` — move semantics |
-| **ALWAYS** полная перезагрузка, не инкрементальная | Проще, надёжнее, нет edge cases с порядком событий |
-| Callback живёт в `scripts/` | Это не flow — нет HTTP/gRPC контекста |
-| Кэш имеет метод `reload_all` | Очищает и заново заполняет из итератора |
