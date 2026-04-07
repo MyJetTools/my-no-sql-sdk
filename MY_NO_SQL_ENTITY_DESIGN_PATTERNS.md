@@ -168,7 +168,51 @@ my-no-sql-entities = { path = "../my-no-sql-entities" }
 
 ---
 
-## 3. Common Mistakes / Anti-patterns
+## 3. Entity with expiration (with_expires)
+
+When an entity should auto-expire after a certain time, use `with_expires:true`. This adds an `expires: Timestamp` field to the struct.
+
+**Important:** when using `with_expires`, all parameters must be named — positional syntax does not work with multiple parameters.
+
+```rust
+// ✅ CORRECT — all parameters named
+#[my_no_sql_entity(table_name:"sessions", with_expires:true)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionEntity {
+    pub trader_id: String,
+}
+
+// ✅ CORRECT — single positional parameter (no expires)
+#[my_no_sql_entity("sessions")]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionEntity {
+    pub trader_id: String,
+}
+
+// ❌ WRONG — mixing positional and named parameters
+#[my_no_sql_entity("sessions", with_expires:true)]
+```
+
+Setting the expiration value:
+
+```rust
+use std::time::Duration;
+use my_no_sql_sdk::core::rust_extensions::date_time::DateTimeAsMicroseconds;
+
+let entity = SessionEntity {
+    partition_key: "pk".to_string(),
+    row_key: "rk".to_string(),
+    time_stamp: Default::default(),
+    expires: DateTimeAsMicroseconds::now()
+        .add(Duration::from_secs(300))  // expires in 5 minutes
+        .into(),
+    trader_id: "trader-1".to_string(),
+};
+```
+
+---
+
+## 4. Common Mistakes / Anti-patterns
 
 | Mistake | Fix |
 |---|---|
@@ -180,7 +224,7 @@ my-no-sql-entities = { path = "../my-no-sql-entities" }
 
 ---
 
-## 4. Reader Change Callbacks
+## 5. Reader Change Callbacks
 
 When a service maintains an in-memory cache based on NoSql data and must react to changes — use `MyNoSqlDataReaderCallBacks`.
 
