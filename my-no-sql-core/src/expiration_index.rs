@@ -96,7 +96,7 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
             self.do_remove(old_expires, itm.get_id_as_str());
         }
 
-        let added = self.add(itm);
+        let _added = self.add(itm);
     }
 
     pub fn remove(&mut self, itm: &impl ExpirationIndex<TOwnedType>) {

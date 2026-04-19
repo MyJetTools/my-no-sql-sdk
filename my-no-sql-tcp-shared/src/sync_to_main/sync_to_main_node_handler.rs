@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use rust_extensions::{events_loop::EventsLoop, ApplicationStates, Logger};
-use tokio::sync::Mutex;
 
 use super::{
     sync_to_main_node_handler_inner::SyncToMainNodeHandlerInner, DataReaderTcpConnection,
@@ -10,28 +9,26 @@ use super::{
 
 pub struct SyncToMainNodeHandler {
     pub inner: Arc<SyncToMainNodeHandlerInner>,
-    events_loop: Mutex<EventsLoop<SyncToMainNodeEvent>>,
+    events_loop: EventsLoop<SyncToMainNodeEvent>,
 }
 
 impl SyncToMainNodeHandler {
-    pub fn new(logger: Arc<dyn Logger + Send + Sync + 'static>) -> Self {
-        let mut events_loop = EventsLoop::new("SyncToMainNodeQueues".to_string(), logger);
+    pub fn new() -> Self {
+        let events_loop = EventsLoop::new("SyncToMainNodeQueues".to_string());
 
         let events_publisher = events_loop.get_publisher();
 
         let inner = Arc::new(SyncToMainNodeHandlerInner::new(events_publisher));
 
-        events_loop.register_event_loop(inner.clone());
-
         Self {
             inner,
-            events_loop: Mutex::new(events_loop),
+            events_loop: events_loop,
         }
     }
 
-    pub async fn start(&self, app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
-        let mut events_loop = self.events_loop.lock().await;
-        events_loop.start(app_states);
+    pub async fn start(&self, logger: Arc<dyn Logger + Send + Sync + 'static>,app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
+        self.events_loop.register_event_loop(self.inner.clone()).await;
+        self.events_loop.start(app_states, logger).await;
     }
 
     pub fn tcp_events_pusher_new_connection_established(
