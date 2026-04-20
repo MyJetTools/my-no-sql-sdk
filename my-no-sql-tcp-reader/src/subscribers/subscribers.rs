@@ -7,14 +7,15 @@ use tokio::sync::RwLock;
 
 use super::{MyNoSqlDataReaderTcp, UpdateEvent};
 
+#[derive(Clone)]
 pub struct Subscribers {
-    subscribers: RwLock<BTreeMap<String, Arc<dyn UpdateEvent + Send + Sync + 'static>>>,
+    subscribers: Arc<RwLock<BTreeMap<String, Arc<dyn UpdateEvent + Send + Sync + 'static>>>>,
 }
 
 impl Subscribers {
     pub fn new() -> Self {
         Self {
-            subscribers: RwLock::new(BTreeMap::new()),
+            subscribers: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 

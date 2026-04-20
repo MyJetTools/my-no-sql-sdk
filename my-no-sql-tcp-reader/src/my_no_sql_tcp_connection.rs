@@ -28,7 +28,7 @@ pub struct MyNoSqlTcpConnection {
     tcp_client: TcpClient,
     pub ping_timeout: Duration,
     pub connect_timeout: Duration,
-    pub tcp_events: Arc<TcpEvents>,
+    pub tcp_events: TcpEvents,
     app_states: Arc<AppStates>,
 }
 
@@ -45,10 +45,10 @@ impl MyNoSqlTcpConnection {
             tcp_client: TcpClient::new("MyNoSqlClient".to_string(), Arc::new(settings)),
             ping_timeout: Duration::from_secs(3),
             connect_timeout: Duration::from_secs(3),
-            tcp_events: Arc::new(TcpEvents::new(
+            tcp_events: TcpEvents::new(
                 app_name.to_string(),
                 Arc::new(SyncToMainNodeHandler::new()),
-            )),
+            ),
             app_states: Arc::new(AppStates::create_un_initialized()),
         }
     }

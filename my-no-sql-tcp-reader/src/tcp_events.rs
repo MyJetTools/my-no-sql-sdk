@@ -9,8 +9,11 @@ use crate::subscribers::Subscribers;
 
 pub type MyNoSqlTcpConnection =
     TcpSocketConnection<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()>;
+
+
+#[derive(Clone)]
 pub struct TcpEvents {
-    app_name: String,
+    app_name: Arc<String>,
     pub subscribers: Subscribers,
     pub sync_handler: Arc<SyncToMainNodeHandler>,
 }
@@ -18,7 +21,7 @@ pub struct TcpEvents {
 impl TcpEvents {
     pub fn new(app_name: String, sync_handler: Arc<SyncToMainNodeHandler>) -> Self {
         Self {
-            app_name,
+            app_name: Arc::new(app_name),
             subscribers: Subscribers::new(),
             sync_handler,
         }
@@ -27,7 +30,7 @@ impl TcpEvents {
 
 #[async_trait::async_trait]
 impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for TcpEvents {
-    async fn connected(&self, connection: Arc<MyNoSqlTcpConnection>) {
+    async fn connected(&mut self, connection: Arc<MyNoSqlTcpConnection>) {
         let contract = MyNoSqlTcpContract::Greeting {
             name: self.app_name.to_string(),
         };
@@ -46,12 +49,12 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             .tcp_events_pusher_new_connection_established(connection);
     }
 
-    async fn disconnected(&self, connection: Arc<MyNoSqlTcpConnection>) {
+    async fn disconnected(&mut self, connection: Arc<MyNoSqlTcpConnection>) {
         self.sync_handler
             .tcp_events_pusher_connection_disconnected(connection);
     }
 
-    async fn payload(&self, _connection: &Arc<MyNoSqlTcpConnection>, contract: MyNoSqlTcpContract) {
+    async fn payload(&mut self, _connection: &Arc<MyNoSqlTcpConnection>, contract: MyNoSqlTcpContract) {
         match contract {
             MyNoSqlTcpContract::Ping => {}
             MyNoSqlTcpContract::Pong => {}
