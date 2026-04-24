@@ -37,7 +37,7 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
 
         connection.send(&contract);
 
-        for table in self.subscribers.get_tables_to_subscribe().await {
+        for table in self.subscribers.get_tables_to_subscribe().iter() {
             let contract = MyNoSqlTcpContract::Subscribe {
                 table_name: table.to_string(),
             };
@@ -61,7 +61,7 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             MyNoSqlTcpContract::Greeting { name: _ } => {}
             MyNoSqlTcpContract::Subscribe { table_name: _ } => {}
             MyNoSqlTcpContract::InitTable { table_name, data } => {
-                if let Some(update_event) = self.subscribers.get(table_name.as_str()).await {
+                if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event.as_ref().init_table(data).await;
                 }
             }
@@ -70,7 +70,7 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
                 partition_key,
                 data,
             } => {
-                if let Some(update_event) = self.subscribers.get(table_name.as_str()).await {
+                if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event
                         .as_ref()
                         .init_partition(partition_key.as_str(), data)
@@ -78,12 +78,12 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
                 }
             }
             MyNoSqlTcpContract::UpdateRows { table_name, data } => {
-                if let Some(update_event) = self.subscribers.get(table_name.as_str()).await {
+                if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event.as_ref().update_rows(data).await;
                 }
             }
             MyNoSqlTcpContract::DeleteRows { table_name, rows } => {
-                if let Some(update_event) = self.subscribers.get(table_name.as_str()).await {
+                if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event.as_ref().delete_rows(rows).await;
                 }
             }

@@ -3,6 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use crate::db_snapshots::{DbPartitionSnapshot, DbTableSnapshot};
 use my_no_sql_core::db::*;
 use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
+use rust_extensions::sorted_vec::EntityWithStrKey;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "master-node")]
@@ -11,6 +12,12 @@ use my_no_sql_core::db::DbTableAttributes;
 pub struct DbTable {
     pub name: DbTableName,
     pub data: RwLock<DbTableInner>,
+}
+
+impl EntityWithStrKey for DbTable {
+    fn get_key(&self) -> &str {
+        self.name.as_str()
+    }
 }
 
 impl DbTable {

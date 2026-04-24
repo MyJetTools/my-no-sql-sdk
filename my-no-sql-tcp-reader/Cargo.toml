@@ -20,6 +20,7 @@ my-json = { tag = "0.3.2", git = "https://github.com/MyJetTools/my-json.git" }
 
 tokio = { version = "*", features = ["full"] }
 tokio-util = "*"
+arc-swap = "*"
 async-trait = "*"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
