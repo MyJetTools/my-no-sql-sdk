@@ -27,8 +27,8 @@ impl SyncToMainNodeHandler {
     }
 
     pub async fn start(&self, logger: Arc<dyn Logger + Send + Sync + 'static>,app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
-        self.events_loop.register_event_loop(self.inner.clone()).await;
-        self.events_loop.start(app_states, logger).await;
+        self.events_loop.register_event_loop(self.inner.clone());
+        self.events_loop.start(app_states, logger);
     }
 
     pub fn tcp_events_pusher_new_connection_established(

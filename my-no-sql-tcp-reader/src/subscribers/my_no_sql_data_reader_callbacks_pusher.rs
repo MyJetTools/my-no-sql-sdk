@@ -37,8 +37,8 @@ where
             "MyNoSqlDataReaderCallBacksPusher".to_string(),
   
         );
-        events_loop.register_event_loop(Arc::new(events_loop_reader)).await;
-        events_loop.start(app_states,  my_logger::LOGGER.clone(),).await;
+        events_loop.register_event_loop(Arc::new(events_loop_reader));
+        events_loop.start(app_states,  my_logger::LOGGER.clone(),);
         Self { events_loop }
     }
 
