@@ -26,7 +26,7 @@ impl SyncToMainNodeHandler {
         }
     }
 
-    pub async fn start(&self, logger: Arc<dyn Logger + Send + Sync + 'static>,app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
+    pub fn start(&self, logger: Arc<dyn Logger + Send + Sync + 'static>,app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
         self.events_loop.register_event_loop(self.inner.clone());
         self.events_loop.start(app_states, logger);
     }

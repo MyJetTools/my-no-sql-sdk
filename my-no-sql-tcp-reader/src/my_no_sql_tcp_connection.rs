@@ -53,7 +53,7 @@ impl MyNoSqlTcpConnection {
         }
     }
 
-    pub async fn get_reader<
+    pub fn get_reader<
         TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'static,
     >(
         &self,
@@ -64,7 +64,7 @@ impl MyNoSqlTcpConnection {
                 self.app_states.clone(),
                 self.tcp_events.sync_handler.clone(),
             )
-            .await
+            
     }
 
     pub async fn start(&self) {
@@ -80,7 +80,6 @@ impl MyNoSqlTcpConnection {
 
         self.tcp_events
             .sync_handler
-            .start(my_logger::LOGGER.clone(), self.app_states.clone())
-            .await;
+            .start(my_logger::LOGGER.clone(), self.app_states.clone());
     }
 }

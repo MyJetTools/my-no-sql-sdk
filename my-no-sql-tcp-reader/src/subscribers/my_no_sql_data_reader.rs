@@ -11,23 +11,23 @@ pub trait MyNoSqlDataReader<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'static,
 >
 {
-    async fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>>;
+    fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>>;
 
-    async fn get_by_partition_key(
+    fn get_by_partition_key(
         &self,
         partition_key: &str,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>>;
 
-    async fn get_by_partition_key_as_vec(
+    fn get_by_partition_key_as_vec(
         &self,
         partition_key: &str,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>>;
 
-    async fn get_partition_keys(&self) -> Vec<String>;
+    fn get_partition_keys(&self) -> Vec<String>;
 
-    async fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>>;
+    fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>>;
 
-    async fn get_enum_case_model<
+    fn get_enum_case_model<
         's,
         T: MyNoSqlEntity
             + my_no_sql_abstractions::GetMyNoSqlEntity
@@ -38,12 +38,12 @@ pub trait MyNoSqlDataReader<
     >(
         &self,
     ) -> Option<T> {
-        let result = self.get_entity(T::PARTITION_KEY, T::ROW_KEY).await?;
+        let result = self.get_entity(T::PARTITION_KEY, T::ROW_KEY)?;
         let result = result.into();
         Some(result)
     }
 
-    async fn get_enum_case_models_by_partition_key<
+     fn get_enum_case_models_by_partition_key<
         T: MyNoSqlEntity
             + my_no_sql_abstractions::GetMyNoSqlEntitiesByPartitionKey
             + From<Arc<TMyNoSqlEntity>>
@@ -53,7 +53,7 @@ pub trait MyNoSqlDataReader<
     >(
         &self,
     ) -> Option<BTreeMap<String, T>> {
-        let items = self.get_by_partition_key(T::PARTITION_KEY).await?;
+        let items = self.get_by_partition_key(T::PARTITION_KEY)?;
         let mut result = BTreeMap::new();
 
         for (pk, entity) in items {
@@ -64,7 +64,7 @@ pub trait MyNoSqlDataReader<
         Some(result)
     }
 
-    async fn get_enum_case_models_by_partition_key_as_vec<
+    fn get_enum_case_models_by_partition_key_as_vec<
         T: MyNoSqlEntity
             + MyNoSqlEntitySerializer
             + my_no_sql_abstractions::GetMyNoSqlEntitiesByPartitionKey
@@ -75,7 +75,7 @@ pub trait MyNoSqlDataReader<
     >(
         &self,
     ) -> Option<Vec<T>> {
-        let items = self.get_by_partition_key_as_vec(T::PARTITION_KEY).await?;
+        let items = self.get_by_partition_key_as_vec(T::PARTITION_KEY)?;
 
         let mut result = Vec::with_capacity(items.len());
 
@@ -95,11 +95,11 @@ pub trait MyNoSqlDataReader<
         row_key: &'s str,
     ) -> GetEntityBuilder<'s, TMyNoSqlEntity>;
 
-    async fn has_partition(&self, partition_key: &str) -> bool;
+    fn has_partition(&self, partition_key: &str) -> bool;
 
     async fn wait_until_first_data_arrives(&self);
 
-    async fn assign_callback<
+    fn assign_callback<
         TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
     >(
         &self,

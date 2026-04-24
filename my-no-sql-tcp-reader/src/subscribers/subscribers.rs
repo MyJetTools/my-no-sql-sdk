@@ -54,7 +54,7 @@ impl Subscribers {
         }
     }
 
-    pub async fn create_subscriber<TMyNoSqlEntity>(
+    pub fn create_subscriber<TMyNoSqlEntity>(
         &self,
         app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>,
         sync_handler: Arc<SyncToMainNodeHandler>,

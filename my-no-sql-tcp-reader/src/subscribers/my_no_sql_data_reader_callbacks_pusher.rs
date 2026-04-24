@@ -26,7 +26,7 @@ impl<TMyNoSqlEntity> MyNoSqlDataReaderCallBacksPusher<TMyNoSqlEntity>
 where
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
 {
-    pub async fn new<
+    pub fn new<
         TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
     >(
         callbacks: Arc<TMyNoSqlDataReaderCallBacks>,
@@ -69,7 +69,7 @@ impl<TMyNoSqlEntity> MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>
 where
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
 {
-    async fn inserted_or_replaced(
+    fn inserted_or_replaced(
         &self,
         partition_key: &str,
         entities: Vec<LazyMyNoSqlEntity<TMyNoSqlEntity>>,
@@ -80,7 +80,7 @@ where
         ));
     }
 
-    async fn deleted(
+    fn deleted(
         &self,
         partition_key: &str,
         entities: Vec<LazyMyNoSqlEntity<TMyNoSqlEntity>>,
@@ -120,13 +120,11 @@ impl<
         match model {
             PusherEvents::InsertedOrReplaced(partition_key, entities) => {
                 self.callbacks
-                    .inserted_or_replaced(partition_key.as_str(), entities)
-                    .await;
+                    .inserted_or_replaced(partition_key.as_str(), entities);
             }
             PusherEvents::Deleted(partition_key, entities) => {
                 self.callbacks
-                    .deleted(partition_key.as_str(), entities)
-                    .await;
+                    .deleted(partition_key.as_str(), entities);
             }
         }
         if self.item.is_some() {}

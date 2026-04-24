@@ -123,8 +123,7 @@ pub async fn trigger_brand_new_table<
 
         if added_entities.len() > 0 {
             callbacks
-                .inserted_or_replaced(partition_key, added_entities)
-                .await;
+                .inserted_or_replaced(partition_key, added_entities);
         }
     }
 }
@@ -159,8 +158,7 @@ pub async fn trigger_old_and_new_table_difference<
 
         if deleted_entities.len() > 0 {
             callbacks
-                .deleted(before_partition_key.as_str(), deleted_entities)
-                .await;
+                .deleted(before_partition_key.as_str(), deleted_entities);
         }
     }
 }
@@ -191,8 +189,7 @@ pub async fn trigger_partition_difference<
 
                 if inserted_or_replaced.len() > 0 {
                     callbacks
-                        .inserted_or_replaced(partition_key, inserted_or_replaced)
-                        .await;
+                        .inserted_or_replaced(partition_key, inserted_or_replaced);
                 }
             }
 
@@ -203,7 +200,7 @@ pub async fn trigger_partition_difference<
             }
 
             if deleted_entities.len() > 0 {
-                callbacks.deleted(partition_key, deleted_entities).await;
+                callbacks.deleted(partition_key, deleted_entities);
             }
         }
         None => {
@@ -228,8 +225,7 @@ pub async fn trigger_brand_new_partition<
 
     if inserted_or_replaced.len() > 0 {
         callbacks
-            .inserted_or_replaced(partition_key, inserted_or_replaced)
-            .await;
+            .inserted_or_replaced(partition_key, inserted_or_replaced);
     }
 }
 
@@ -263,9 +259,8 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl MyNoSqlDataReaderCallBacks<TestRow> for TestCallbacks {
-        async fn inserted_or_replaced(
+        fn inserted_or_replaced(
             &self,
             partition_key: &str,
             entities: Vec<LazyMyNoSqlEntity<TestRow>>,
@@ -287,7 +282,7 @@ mod tests {
             }
         }
 
-        async fn deleted(&self, partition_key: &str, entities: Vec<LazyMyNoSqlEntity<TestRow>>) {
+        fn deleted(&self, partition_key: &str, entities: Vec<LazyMyNoSqlEntity<TestRow>>) {
             let mut write_access = self.data.lock();
             match write_access.deleted.get_mut(partition_key) {
                 Some(db_partition) => {

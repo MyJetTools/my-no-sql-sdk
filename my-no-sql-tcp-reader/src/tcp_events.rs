@@ -62,7 +62,7 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             MyNoSqlTcpContract::Subscribe { table_name: _ } => {}
             MyNoSqlTcpContract::InitTable { table_name, data } => {
                 if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
-                    update_event.as_ref().init_table(data).await;
+                    update_event.as_ref().init_table(data);
                 }
             }
             MyNoSqlTcpContract::InitPartition {
@@ -73,18 +73,17 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
                 if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event
                         .as_ref()
-                        .init_partition(partition_key.as_str(), data)
-                        .await;
+                        .init_partition(partition_key.as_str(), data);
                 }
             }
             MyNoSqlTcpContract::UpdateRows { table_name, data } => {
                 if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
-                    update_event.as_ref().update_rows(data).await;
+                    update_event.as_ref().update_rows(data);
                 }
             }
             MyNoSqlTcpContract::DeleteRows { table_name, rows } => {
                 if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
-                    update_event.as_ref().delete_rows(rows).await;
+                    update_event.as_ref().delete_rows(rows);
                 }
             }
             MyNoSqlTcpContract::Error { message } => {

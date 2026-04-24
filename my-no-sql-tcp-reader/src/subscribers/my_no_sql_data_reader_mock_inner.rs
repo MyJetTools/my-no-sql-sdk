@@ -47,14 +47,14 @@ where
         }
     }
 
-    pub async fn assign_callback<
+    pub fn assign_callback<
         TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
     >(
         &self,
         callbacks: Arc<TMyNoSqlDataReaderCallBacks>,
     ) {
         let pusher =
-            MyNoSqlDataReaderCallBacksPusher::new(callbacks, self.app_states.clone()).await;
+            MyNoSqlDataReaderCallBacksPusher::new(callbacks, self.app_states.clone());
 
         let mut write_access = self.inner.write();
         write_access.callbacks = Some(Arc::new(pusher));

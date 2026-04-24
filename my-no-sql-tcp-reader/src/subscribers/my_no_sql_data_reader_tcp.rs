@@ -56,19 +56,19 @@ where
         }
     }
 
-    pub async fn get_table_snapshot(
+    pub fn get_table_snapshot(
         &self,
     ) -> Option<BTreeMap<String, BTreeMap<String, Arc<TMyNoSqlEntity>>>> {
         let mut reader = self.inner.data.lock();
         return reader.get_table_snapshot();
     }
 
-    pub async fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
+    pub fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         let mut reader = self.inner.data.lock();
         reader.get_table_snapshot_as_vec()
     }
 
-    pub async fn get_by_partition_key(
+    pub fn get_by_partition_key(
         &self,
         partition_key: &str,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
@@ -76,7 +76,7 @@ where
         reader.get_by_partition(partition_key)
     }
 
-    pub async fn get_by_partition_key_as_vec(
+    pub fn get_by_partition_key_as_vec(
         &self,
         partition_key: &str,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
@@ -84,7 +84,7 @@ where
         reader.get_by_partition_as_vec(partition_key)
     }
 
-    pub async fn get_entity(
+    pub fn get_entity(
         &self,
         partition_key: &str,
         row_key: &str,
@@ -108,12 +108,12 @@ where
         GetEntityBuilder::new(partition_key, row_key, self.inner.clone())
     }
 
-    pub async fn has_partition(&self, partition_key: &str) -> bool {
+    pub fn has_partition(&self, partition_key: &str) -> bool {
         let reader = self.inner.data.lock();
         reader.has_partition(partition_key)
     }
 
-    pub async fn iter_and_find_entity_inside_partition(
+    pub fn iter_and_find_entity_inside_partition(
         &self,
         partition_key: &str,
         predicate: impl Fn(&TMyNoSqlEntity) -> bool,
@@ -201,7 +201,7 @@ where
         result
     }
 
-    pub async fn get_enum_case_models_by_partition_key<
+    pub fn get_enum_case_models_by_partition_key<
         's,
         TResult: MyNoSqlEntity
             + my_no_sql_abstractions::GetMyNoSqlEntitiesByPartitionKey
@@ -213,8 +213,7 @@ where
         &self,
     ) -> Option<Vec<TResult>> {
         let entities = self
-            .get_by_partition_key_as_vec(TResult::PARTITION_KEY)
-            .await?;
+            .get_by_partition_key_as_vec(TResult::PARTITION_KEY)?;
 
         let mut result = Vec::with_capacity(entities.len());
 
@@ -225,7 +224,7 @@ where
         Some(result)
     }
 
-    pub async fn get_enum_case_model<
+    pub fn get_enum_case_model<
         TResult: MyNoSqlEntity
             + From<Arc<TMyNoSqlEntity>>
             + my_no_sql_abstractions::GetMyNoSqlEntity
@@ -236,13 +235,12 @@ where
         &self,
     ) -> Option<TResult> {
         let entity = self
-            .get_entity(TResult::PARTITION_KEY, TResult::ROW_KEY)
-            .await?;
+            .get_entity(TResult::PARTITION_KEY, TResult::ROW_KEY)?;
 
         Some(TResult::from(entity))
     }
 
-    pub async fn get_partition_keys(&self) -> Vec<String> {
+    pub fn get_partition_keys(&self) -> Vec<String> {
         let write_access = self.inner.data.lock();
         write_access.get_partition_keys()
     }
@@ -252,28 +250,28 @@ where
 impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> UpdateEvent
     for MyNoSqlDataReaderTcp<TMyNoSqlEntity>
 {
-    async fn init_table(&self, data: Vec<u8>) {
+    fn init_table(&self, data: Vec<u8>) {
         let data = self.deserialize_array(data.as_slice());
 
         let mut write_access = self.inner.data.lock();
         write_access.init_table(data);
     }
 
-    async fn init_partition(&self, partition_key: &str, data: Vec<u8>) {
+    fn init_partition(&self, partition_key: &str, data: Vec<u8>) {
         let data = self.deserialize_array(data.as_slice());
 
         let mut write_access = self.inner.data.lock();
         write_access.init_partition(partition_key, data);
     }
 
-    async fn update_rows(&self, data: Vec<u8>) {
+    fn update_rows(&self, data: Vec<u8>) {
         let data = self.deserialize_array(data.as_slice());
 
         let mut write_access = self.inner.data.lock();
         write_access.update_rows(data);
     }
 
-    async fn delete_rows(&self, rows_to_delete: Vec<my_no_sql_tcp_shared::DeleteRowTcpContract>) {
+    fn delete_rows(&self, rows_to_delete: Vec<my_no_sql_tcp_shared::DeleteRowTcpContract>) {
         let mut write_access = self.inner.data.lock();
         write_access.delete_rows(rows_to_delete);
     }
@@ -285,29 +283,29 @@ where
     TMyNoSqlEntity:
         MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + DeserializeOwned + 'static,
 {
-    async fn get_partition_keys(&self) -> Vec<String> {
-        self.get_partition_keys().await
+    fn get_partition_keys(&self) -> Vec<String> {
+        self.get_partition_keys()
     }
-    async fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        self.get_table_snapshot_as_vec().await
+    fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
+        self.get_table_snapshot_as_vec()
     }
 
-    async fn get_by_partition_key(
+    fn get_by_partition_key(
         &self,
         partition_key: &str,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
-        self.get_by_partition_key(partition_key).await
+        self.get_by_partition_key(partition_key)
     }
 
-    async fn get_by_partition_key_as_vec(
+    fn get_by_partition_key_as_vec(
         &self,
         partition_key: &str,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        self.get_by_partition_key_as_vec(partition_key).await
+        self.get_by_partition_key_as_vec(partition_key)
     }
 
-    async fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>> {
-        self.get_entity(partition_key, row_key).await
+    fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>> {
+        self.get_entity(partition_key, row_key)
     }
 
     fn get_entities<'s>(&self, partition_key: &'s str) -> GetEntitiesBuilder<TMyNoSqlEntity> {
@@ -322,8 +320,8 @@ where
         self.get_entity_with_callback_to_server(partition_key, row_key)
     }
 
-    async fn has_partition(&self, partition_key: &str) -> bool {
-        self.has_partition(partition_key).await
+    fn has_partition(&self, partition_key: &str) -> bool {
+        self.has_partition(partition_key)
     }
 
     async fn wait_until_first_data_arrives(&self) {
@@ -339,7 +337,7 @@ where
         }
     }
 
-    async fn assign_callback<
+    fn assign_callback<
         TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
     >(
         &self,
@@ -350,7 +348,7 @@ where
             reader.get_app_states().clone()
         };
         let pusher =
-            super::MyNoSqlDataReaderCallBacksPusher::new(callbacks, app_states).await;
+            super::MyNoSqlDataReaderCallBacksPusher::new(callbacks, app_states);
         let mut write_access = self.inner.data.lock();
         write_access.set_callbacks(Arc::new(pusher));
     }

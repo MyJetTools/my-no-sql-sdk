@@ -35,7 +35,7 @@ impl<TMyNoSqlEntity> MyNoSqlDataReader<TMyNoSqlEntity> for MyNoSqlDataReaderMock
 where
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'static,
 {
-    async fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
+     fn get_table_snapshot_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         let result = self.inner.get_table_snapshot_as_vec();
 
         if result.len() == 0 {
@@ -45,25 +45,25 @@ where
         Some(result)
     }
 
-    async fn get_by_partition_key(
+     fn get_by_partition_key(
         &self,
         partition_key: &str,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
         self.inner.get_by_partition_key(partition_key)
     }
 
-    async fn get_partition_keys(&self) -> Vec<String> {
+     fn get_partition_keys(&self) -> Vec<String> {
         self.inner.get_partition_keys()
     }
 
-    async fn get_by_partition_key_as_vec(
+     fn get_by_partition_key_as_vec(
         &self,
         partition_key: &str,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         self.inner.get_by_partition_key_as_vec(partition_key)
     }
 
-    async fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>> {
+     fn get_entity(&self, partition_key: &str, row_key: &str) -> Option<Arc<TMyNoSqlEntity>> {
         self.inner.get_entity(partition_key, row_key)
     }
 
@@ -79,20 +79,20 @@ where
         GetEntityBuilder::new_mock(partition_key, row_key, self.inner.clone())
     }
 
-    async fn has_partition(&self, partition_key: &str) -> bool {
+     fn has_partition(&self, partition_key: &str) -> bool {
         self.inner.has_partition(partition_key)
     }
 
     async fn wait_until_first_data_arrives(&self) {
-        todo!("Not Implemented");
+        
     }
 
-    async fn assign_callback<
+    fn assign_callback<
         TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
     >(
         &self,
         callbacks: Arc<TMyNoSqlDataReaderCallBacks>,
     ) {
-        self.inner.assign_callback(callbacks).await
+        self.inner.assign_callback(callbacks)
     }
 }
