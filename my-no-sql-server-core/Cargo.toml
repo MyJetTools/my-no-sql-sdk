@@ -16,4 +16,5 @@ rust-extensions = { tag = "0.1.5", git = "https://github.com/MyJetTools/rust-ext
 ] }
 tokio = { version = "*", features = ["full"] }
 arc-swap = "*"
+parking_lot = "*"
 my-no-sql-core = { path = "../my-no-sql-core" }

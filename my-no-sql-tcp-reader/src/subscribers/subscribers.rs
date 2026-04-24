@@ -62,7 +62,7 @@ impl Subscribers {
     where
         TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'static,
     {
-        let new_reader = MyNoSqlDataReaderTcp::new(app_states, sync_handler).await;
+        let new_reader = MyNoSqlDataReaderTcp::new(app_states, sync_handler);
         let new_reader = Arc::new(new_reader);
 
         let _guard = self.state.write_lock.lock().unwrap();

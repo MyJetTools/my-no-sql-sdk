@@ -5,7 +5,7 @@ use rust_extensions::ApplicationStates;
 
 use crate::DataReaderEntitiesSet;
 
-use super::{LazyMyNoSqlEntity, MyNoSqlDataReaderCallBacks, MyNoSqlDataReaderCallBacksPusher};
+use super::{LazyMyNoSqlEntity, MyNoSqlDataReaderCallBacksPusher};
 
 pub struct MyNoSqlDataReaderData<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
@@ -19,7 +19,7 @@ impl<TMyNoSqlEntity> MyNoSqlDataReaderData<TMyNoSqlEntity>
 where
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
 {
-    pub async fn new(
+    pub fn new(
         table_name: &'static str,
         app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>,
     ) -> Self {
@@ -30,51 +30,46 @@ where
         }
     }
 
-    pub async fn assign_callback<
-        TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity> + Send + Sync + 'static,
-    >(
-        &mut self,
-        callbacks: Arc<TMyNoSqlDataReaderCallBacks>,
-    ) {
-        let pusher =
-            MyNoSqlDataReaderCallBacksPusher::new(callbacks, self.app_states.clone()).await;
-
-        self.callbacks = Some(Arc::new(pusher));
+    pub fn get_app_states(&self) -> &Arc<dyn ApplicationStates + Send + Sync + 'static> {
+        &self.app_states
     }
 
-    pub async fn init_table(
+    pub fn set_callbacks(
+        &mut self,
+        pusher: Arc<MyNoSqlDataReaderCallBacksPusher<TMyNoSqlEntity>>,
+    ) {
+        self.callbacks = Some(pusher);
+    }
+
+    pub fn init_table(
         &mut self,
         data: BTreeMap<String, Vec<LazyMyNoSqlEntity<TMyNoSqlEntity>>>,
     ) {
         let init_table_result = self.entities.init_table(data);
 
         if let Some(callbacks) = self.callbacks.as_ref() {
-            super::callback_triggers::trigger_table_difference(
+            super::callback_triggers::trigger_table_difference_sync(
                 callbacks.as_ref(),
                 init_table_result.table_before,
                 init_table_result.table_now,
-            )
-            .await;
+            );
         }
     }
 
-    pub async fn init_partition(
+    pub fn init_partition(
         &mut self,
         partition_key: &str,
         src_entities: BTreeMap<String, Vec<LazyMyNoSqlEntity<TMyNoSqlEntity>>>,
     ) {
-        //let callbacks = self.callbacks.clone();
-
         let init_partition_result = self.entities.init_partition(partition_key, src_entities);
 
         if let Some(callbacks) = self.callbacks.as_ref() {
-            super::callback_triggers::trigger_partition_difference(
+            super::callback_triggers::trigger_partition_difference_sync(
                 callbacks.as_ref(),
                 partition_key,
                 init_partition_result.partition_now,
                 init_partition_result.partition_before,
-            )
-            .await;
+            );
         }
     }
 
@@ -252,7 +247,7 @@ where
         Some(result)
     }
 
-    pub async fn has_entities_at_all(&self) -> bool {
+    pub fn has_entities_at_all(&self) -> bool {
         self.entities.is_initialized()
     }
 }

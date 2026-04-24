@@ -1,5 +1,5 @@
+use parking_lot::Mutex;
 use rust_extensions::events_loop::{EventsLoopPublisher, EventsLoopTick};
-use tokio::sync::Mutex;
 
 use crate::sync_to_main::DeliverToMainNodeEvent;
 
@@ -25,28 +25,28 @@ impl EventsLoopTick<SyncToMainNodeEvent> for SyncToMainNodeHandlerInner {
     async fn tick(&self, event: SyncToMainNodeEvent) {
         match event {
             SyncToMainNodeEvent::Connected(connection) => {
-                let mut queues = self.queues.lock().await;
+                let mut queues = self.queues.lock();
                 queues.new_connection(connection);
-                to_main_node_pusher(&mut queues, None).await;
+                to_main_node_pusher(&mut queues, None);
             }
             SyncToMainNodeEvent::Disconnected(_) => {
-                let mut queues = self.queues.lock().await;
-                queues.disconnected().await;
+                let mut queues = self.queues.lock();
+                queues.disconnected();
             }
             SyncToMainNodeEvent::PingToDeliver => {
-                let mut queues = self.queues.lock().await;
-                to_main_node_pusher(&mut queues, None).await;
+                let mut queues = self.queues.lock();
+                to_main_node_pusher(&mut queues, None);
             }
             SyncToMainNodeEvent::Delivered(confirmation_id) => {
-                let mut queues = self.queues.lock().await;
-                to_main_node_pusher(&mut queues, Some(confirmation_id)).await;
+                let mut queues = self.queues.lock();
+                to_main_node_pusher(&mut queues, Some(confirmation_id));
             }
         }
     }
     async fn finished(&self) {}
 }
 
-pub async fn to_main_node_pusher(
+pub fn to_main_node_pusher(
     queues: &mut SyncToMainNodeQueue,
     delivered_confirmation_id: Option<i64>,
 ) {

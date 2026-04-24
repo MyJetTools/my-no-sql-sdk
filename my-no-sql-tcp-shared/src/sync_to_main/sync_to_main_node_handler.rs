@@ -55,7 +55,7 @@ impl SyncToMainNodeHandler {
             .send(SyncToMainNodeEvent::Delivered(confirmation_id));
     }
 
-    pub async fn update<'s, TRowKeys: Iterator<Item = &'s str>>(
+    pub fn update<'s, TRowKeys: Iterator<Item = &'s str>>(
         &self,
         table_name: &str,
         partition_key: &str,
@@ -66,7 +66,7 @@ impl SyncToMainNodeHandler {
             return;
         }
 
-        let mut inner = self.inner.queues.lock().await;
+        let mut inner = self.inner.queues.lock();
 
         if data.partition_last_read_moment {
             inner

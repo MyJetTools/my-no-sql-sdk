@@ -43,7 +43,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
 
     pub async fn get_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         let db_rows = {
-            let mut reader = self.inner.get_data().lock().await;
+            let mut reader = self.inner.get_data().lock();
             reader.get_by_partition_as_vec(self.partition_key.as_str())
         }?;
 
@@ -54,8 +54,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
                 &self.partition_key,
                 || db_rows.iter().map(|itm| itm.get_row_key()),
                 &self.update_statistic_data,
-            )
-            .await;
+            );
 
         Some(db_rows)
     }
@@ -65,7 +64,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         let db_rows = {
-            let mut reader = self.inner.get_data().lock().await;
+            let mut reader = self.inner.get_data().lock();
             reader.get_by_partition_as_vec_with_filter(&self.partition_key, filter)
         }?;
 
@@ -76,15 +75,14 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
                 &self.partition_key,
                 || db_rows.iter().map(|itm| itm.get_row_key()),
                 &self.update_statistic_data,
-            )
-            .await;
+            );
 
         Some(db_rows)
     }
 
     pub async fn get_as_btree_map(&self) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
         let db_rows = {
-            let mut reader = self.inner.get_data().lock().await;
+            let mut reader = self.inner.get_data().lock();
             reader.get_by_partition(&self.partition_key)
         }?;
 
@@ -95,8 +93,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
                 &self.partition_key,
                 || db_rows.values().map(|itm| itm.get_row_key()),
                 &self.update_statistic_data,
-            )
-            .await;
+            );
 
         Some(db_rows)
     }
@@ -106,7 +103,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
         let db_rows = {
-            let mut reader = self.inner.get_data().lock().await;
+            let mut reader = self.inner.get_data().lock();
             reader.get_by_partition_with_filter(&self.partition_key, filter)
         }?;
 
@@ -117,8 +114,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
                 &self.partition_key,
                 || db_rows.values().map(|itm| itm.get_row_key()),
                 &self.update_statistic_data,
-            )
-            .await;
+            );
 
         Some(db_rows)
     }

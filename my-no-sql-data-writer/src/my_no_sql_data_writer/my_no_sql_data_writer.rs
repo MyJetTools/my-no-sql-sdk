@@ -57,12 +57,7 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         auto_create_table_params: Option<CreateTableParams>,
         sync_period: DataSynchronizationPeriod,
     ) -> Self {
-        let settings_cloned = settings.clone();
-        tokio::spawn(async move {
-            crate::PING_POOL
-                .register(settings_cloned, TEntity::TABLE_NAME)
-                .await;
-        });
+        crate::PING_POOL.register(settings.clone(), TEntity::TABLE_NAME);
 
         Self {
             phantom: PhantomData,

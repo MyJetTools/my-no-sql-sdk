@@ -58,6 +58,5 @@ impl<'s, TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send +
     pub async fn execute(&self) -> Option<Arc<TMyNoSqlEntity>> {
         self.inner
             .get_entity(self.partition_key, self.row_key)
-            .await
     }
 }

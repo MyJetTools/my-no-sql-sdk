@@ -50,7 +50,7 @@ impl<'s, TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send +
 
     pub async fn execute(&self) -> Option<Arc<TMyNoSqlEntity>> {
         let result = {
-            let mut reader = self.inner.get_data().lock().await;
+            let mut reader = self.inner.get_data().lock();
             reader.get_entity(self.partition_key, self.row_key)
         };
 
@@ -62,8 +62,7 @@ impl<'s, TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send +
                     self.partition_key,
                     || [self.row_key].into_iter(),
                     &self.update_statistic_data,
-                )
-                .await;
+                );
         }
 
         result

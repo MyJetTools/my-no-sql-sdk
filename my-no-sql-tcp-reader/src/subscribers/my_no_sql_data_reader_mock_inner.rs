@@ -4,8 +4,8 @@ use std::{
 };
 
 use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer};
+use parking_lot::RwLock;
 use rust_extensions::{lazy::LazyVec, AppStates};
-use tokio::sync::RwLock;
 
 use crate::MyNoSqlDataReaderCallBacks;
 
@@ -56,12 +56,12 @@ where
         let pusher =
             MyNoSqlDataReaderCallBacksPusher::new(callbacks, self.app_states.clone()).await;
 
-        let mut write_access = self.inner.write().await;
+        let mut write_access = self.inner.write();
         write_access.callbacks = Some(Arc::new(pusher));
     }
 
-    pub async fn update(&self, items: impl Iterator<Item = Arc<TMyNoSqlEntity>>) {
-        let mut write_access = self.inner.write().await;
+    pub fn update(&self, items: impl Iterator<Item = Arc<TMyNoSqlEntity>>) {
+        let mut write_access = self.inner.write();
         for item in items {
             let partition_key = item.get_partition_key();
             let row_key = item.get_row_key();
@@ -73,8 +73,8 @@ where
             partition.insert(row_key.to_string(), item);
         }
     }
-    pub async fn delete(&self, to_delete: impl Iterator<Item = (String, String)>) {
-        let mut write_access = self.inner.write().await;
+    pub fn delete(&self, to_delete: impl Iterator<Item = (String, String)>) {
+        let mut write_access = self.inner.write();
 
         let mut partitions_to_remove = HashSet::new();
         for (partition_key, row_key) in to_delete {
@@ -94,8 +94,8 @@ where
         }
     }
 
-    pub async fn get_table_snapshot_as_vec(&self) -> Vec<Arc<TMyNoSqlEntity>> {
-        let read_access = self.inner.read().await;
+    pub fn get_table_snapshot_as_vec(&self) -> Vec<Arc<TMyNoSqlEntity>> {
+        let read_access = self.inner.read();
         let mut result = Vec::new();
         for partition in read_access.items.values() {
             for item in partition.values() {
@@ -106,24 +106,24 @@ where
         result
     }
 
-    pub async fn get_by_partition_key(
+    pub fn get_by_partition_key(
         &self,
         partition_key: &str,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
-        let read_access = self.inner.read().await;
+        let read_access = self.inner.read();
         read_access.items.get(partition_key).cloned()
     }
 
-    pub async fn get_partition_keys(&self) -> Vec<String> {
-        let read_access = self.inner.read().await;
+    pub fn get_partition_keys(&self) -> Vec<String> {
+        let read_access = self.inner.read();
         read_access.items.keys().cloned().collect()
     }
 
-    pub async fn get_by_partition_key_as_vec(
+    pub fn get_by_partition_key_as_vec(
         &self,
         partition_key: &str,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        let read_access = self.inner.read().await;
+        let read_access = self.inner.read();
         let mut result = LazyVec::new();
         if let Some(partition) = read_access.items.get(partition_key) {
             for item in partition.values() {
@@ -134,12 +134,12 @@ where
         result.get_result()
     }
 
-    pub async fn get_by_partition_key_as_vec_with_filter(
+    pub fn get_by_partition_key_as_vec_with_filter(
         &self,
         partition_key: &str,
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        let read_access = self.inner.read().await;
+        let read_access = self.inner.read();
         let mut result = LazyVec::new();
         if let Some(partition) = read_access.items.get(partition_key) {
             for item in partition.values() {
@@ -152,12 +152,12 @@ where
         result.get_result()
     }
 
-    pub async fn get_entity(
+    pub fn get_entity(
         &self,
         partition_key: &str,
         row_key: &str,
     ) -> Option<Arc<TMyNoSqlEntity>> {
-        let read_access = self.inner.read().await;
+        let read_access = self.inner.read();
         read_access
             .items
             .get(partition_key)
@@ -165,8 +165,8 @@ where
             .cloned()
     }
 
-    pub async fn get_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        let read_access = self.inner.read().await;
+    pub fn get_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
+        let read_access = self.inner.read();
         let mut result = LazyVec::new();
         for partition in read_access.items.values() {
             for item in partition.values() {
@@ -177,11 +177,11 @@ where
         result.get_result()
     }
 
-    pub async fn get_as_vec_with_filter(
+    pub fn get_as_vec_with_filter(
         &self,
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
-        let read_access = self.inner.read().await;
+        let read_access = self.inner.read();
         let mut result = LazyVec::new();
         for partition in read_access.items.values() {
             for item in partition.values() {
@@ -194,8 +194,8 @@ where
         result.get_result()
     }
 
-    pub async fn has_partition(&self, partition_key: &str) -> bool {
-        let read_access = self.inner.read().await;
+    pub fn has_partition(&self, partition_key: &str) -> bool {
+        let read_access = self.inner.read();
         read_access.items.contains_key(partition_key)
     }
 }

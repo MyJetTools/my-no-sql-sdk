@@ -44,26 +44,23 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         self.update_statistic_data.row_expiration_moment = Some(value);
     }
 
-    pub async fn get_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
+    pub  fn get_as_vec(&self) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         self.inner
             .get_by_partition_key_as_vec(&self.partition_key)
-            .await
     }
 
-    pub async fn get_as_vec_with_filter(
+    pub  fn get_as_vec_with_filter(
         &self,
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<Vec<Arc<TMyNoSqlEntity>>> {
         self.inner
             .get_by_partition_key_as_vec_with_filter(&self.partition_key, filter)
-            .await
     }
 
-    pub async fn get_as_btree_map(&self) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
+    pub  fn get_as_btree_map(&self) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
         let items = self
             .inner
-            .get_by_partition_key_as_vec(self.partition_key.as_str())
-            .await?;
+            .get_by_partition_key_as_vec(self.partition_key.as_str())?;
 
         let mut result = BTreeMap::new();
 
@@ -74,14 +71,13 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         Some(result)
     }
 
-    pub async fn get_as_btree_map_with_filter(
+    pub  fn get_as_btree_map_with_filter(
         &self,
         filter: impl Fn(&TMyNoSqlEntity) -> bool,
     ) -> Option<BTreeMap<String, Arc<TMyNoSqlEntity>>> {
         let items = self
             .inner
-            .get_by_partition_key_as_vec_with_filter(self.partition_key.as_str(), filter)
-            .await?;
+            .get_by_partition_key_as_vec_with_filter(self.partition_key.as_str(), filter)?;
 
         let mut result = BTreeMap::new();
 

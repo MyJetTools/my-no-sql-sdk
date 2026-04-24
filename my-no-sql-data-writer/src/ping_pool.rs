@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use flurl::body::FlUrlBody;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use crate::{FlUrlFactory, MyNoSqlWriterSettings};
 
@@ -41,13 +41,13 @@ impl PingPool {
         }
     }
 
-    pub async fn register(
+    pub fn register(
         &self,
 
         settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
         table: &str,
     ) {
-        let mut data = self.data.lock().await;
+        let mut data = self.data.lock();
         if !data.started {
             tokio::spawn(async move { ping_loop().await });
             data.started = true;
@@ -73,14 +73,34 @@ impl PingPool {
     }
 }
 
+struct PingSnapshotItem {
+    name: &'static str,
+    version: &'static str,
+    table_settings: Vec<(
+        String,
+        Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
+    )>,
+}
+
 async fn ping_loop() {
     let delay = Duration::from_secs(30);
     loop {
         tokio::time::sleep(delay).await;
 
-        let access = crate::PING_POOL.data.lock().await;
+        let snapshot: Vec<PingSnapshotItem> = {
+            let access = crate::PING_POOL.data.lock();
+            access
+                .items
+                .iter()
+                .map(|itm| PingSnapshotItem {
+                    name: itm.name,
+                    version: itm.version,
+                    table_settings: itm.table_settings.clone(),
+                })
+                .collect()
+        };
 
-        for itm in access.items.iter() {
+        for itm in snapshot {
             let mut url_to_ping = HashMap::new();
             for (table, settings) in itm.table_settings.iter() {
                 let url = settings.get_url().await;

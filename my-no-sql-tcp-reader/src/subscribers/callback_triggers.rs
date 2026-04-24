@@ -2,8 +2,93 @@ use std::collections::BTreeMap;
 
 use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer};
 
-use super::{LazyMyNoSqlEntity, MyNoSqlDataReaderCallBacks};
+use super::{LazyMyNoSqlEntity, MyNoSqlDataReaderCallBacksPusher};
+#[cfg(test)]
+use super::MyNoSqlDataReaderCallBacks;
 
+pub fn trigger_table_difference_sync<
+    TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
+>(
+    pusher: &MyNoSqlDataReaderCallBacksPusher<TMyNoSqlEntity>,
+    before: Option<BTreeMap<String, BTreeMap<String, LazyMyNoSqlEntity<TMyNoSqlEntity>>>>,
+    now_entities: &BTreeMap<String, BTreeMap<String, LazyMyNoSqlEntity<TMyNoSqlEntity>>>,
+) {
+    match before {
+        Some(mut before) => {
+            for (now_partition_key, now_partition) in now_entities {
+                let before_partition = before.remove(now_partition_key);
+                trigger_partition_difference_sync(
+                    pusher,
+                    now_partition_key,
+                    before_partition,
+                    now_partition,
+                );
+            }
+
+            for (before_partition_key, before_partition) in before {
+                let mut deleted_entities = Vec::new();
+                for (_, db_row) in before_partition {
+                    deleted_entities.push(db_row);
+                }
+                if deleted_entities.len() > 0 {
+                    pusher.deleted(before_partition_key.as_str(), deleted_entities);
+                }
+            }
+        }
+        None => {
+            for (partition_key, now_partition) in now_entities {
+                let mut added_entities = Vec::new();
+                for entity in now_partition.values() {
+                    added_entities.push(entity.clone());
+                }
+                if added_entities.len() > 0 {
+                    pusher.inserted_or_replaced(partition_key, added_entities);
+                }
+            }
+        }
+    }
+}
+
+pub fn trigger_partition_difference_sync<
+    TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
+>(
+    pusher: &MyNoSqlDataReaderCallBacksPusher<TMyNoSqlEntity>,
+    partition_key: &str,
+    before_partition: Option<BTreeMap<String, LazyMyNoSqlEntity<TMyNoSqlEntity>>>,
+    now_partition: &BTreeMap<String, LazyMyNoSqlEntity<TMyNoSqlEntity>>,
+) {
+    match before_partition {
+        Some(mut before_partition) => {
+            for (now_row_key, now_row) in now_partition {
+                let mut inserted_or_replaced = Vec::new();
+                before_partition.remove(now_row_key);
+                inserted_or_replaced.push(now_row.clone());
+                if inserted_or_replaced.len() > 0 {
+                    pusher.inserted_or_replaced(partition_key, inserted_or_replaced);
+                }
+            }
+
+            let mut deleted_entities = Vec::new();
+            for (_, before_row) in before_partition {
+                deleted_entities.push(before_row);
+            }
+            if deleted_entities.len() > 0 {
+                pusher.deleted(partition_key, deleted_entities);
+            }
+        }
+        None => {
+            let mut inserted_or_replaced = Vec::new();
+            for entity in now_partition.values() {
+                inserted_or_replaced.push(entity.clone());
+            }
+            if inserted_or_replaced.len() > 0 {
+                pusher.inserted_or_replaced(partition_key, inserted_or_replaced);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub async fn trigger_table_difference<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
     TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>,
@@ -22,6 +107,7 @@ pub async fn trigger_table_difference<
     }
 }
 
+#[cfg(test)]
 pub async fn trigger_brand_new_table<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
     TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>,
@@ -43,6 +129,7 @@ pub async fn trigger_brand_new_table<
     }
 }
 
+#[cfg(test)]
 pub async fn trigger_old_and_new_table_difference<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
     TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>,
@@ -78,6 +165,7 @@ pub async fn trigger_old_and_new_table_difference<
     }
 }
 
+#[cfg(test)]
 pub async fn trigger_partition_difference<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
     TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>,
@@ -124,6 +212,7 @@ pub async fn trigger_partition_difference<
     }
 }
 
+#[cfg(test)]
 pub async fn trigger_brand_new_partition<
     TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'static,
     TMyNoSqlDataReaderCallBacks: MyNoSqlDataReaderCallBacks<TMyNoSqlEntity>,
@@ -150,7 +239,7 @@ mod tests {
 
     use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer, Timestamp};
     use serde_derive::{Deserialize, Serialize};
-    use tokio::sync::Mutex;
+    use parking_lot::Mutex;
 
     use crate::subscribers::{LazyMyNoSqlEntity, MyNoSqlDataReaderCallBacks};
 
@@ -181,7 +270,7 @@ mod tests {
             partition_key: &str,
             entities: Vec<LazyMyNoSqlEntity<TestRow>>,
         ) {
-            let mut write_access = self.data.lock().await;
+            let mut write_access = self.data.lock();
             match write_access
                 .inserted_or_replaced_entities
                 .get_mut(partition_key)
@@ -199,7 +288,7 @@ mod tests {
         }
 
         async fn deleted(&self, partition_key: &str, entities: Vec<LazyMyNoSqlEntity<TestRow>>) {
-            let mut write_access = self.data.lock().await;
+            let mut write_access = self.data.lock();
             match write_access.deleted.get_mut(partition_key) {
                 Some(db_partition) => {
                     db_partition.extend(entities);
@@ -279,7 +368,7 @@ mod tests {
 
         super::trigger_table_difference(&test_callback, Some(before), &after).await;
 
-        let read_access = test_callback.data.lock().await;
+        let read_access = test_callback.data.lock();
 
         assert_eq!(2, read_access.deleted.get("PK1").unwrap().len());
     }
@@ -305,7 +394,7 @@ mod tests {
 
         super::trigger_table_difference(&test_callback, None, &after).await;
 
-        let read_access = test_callback.data.lock().await;
+        let read_access = test_callback.data.lock();
         assert_eq!(
             2,
             read_access
@@ -345,7 +434,7 @@ mod tests {
 
         super::trigger_table_difference(&test_callback, Some(before), &after).await;
 
-        let read_access = test_callback.data.lock().await;
+        let read_access = test_callback.data.lock();
         assert_eq!(
             1,
             read_access

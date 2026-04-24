@@ -73,7 +73,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         match &self {
             GetEntitiesBuilder::Inner(inner) => inner.get_as_vec().await,
             #[cfg(feature = "mocks")]
-            GetEntitiesBuilder::Mock(inner) => inner.get_as_vec().await,
+            GetEntitiesBuilder::Mock(inner) => inner.get_as_vec(),
         }
     }
 
@@ -84,7 +84,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         match &self {
             GetEntitiesBuilder::Inner(inner) => inner.get_as_vec_with_filter(filter).await,
             #[cfg(feature = "mocks")]
-            GetEntitiesBuilder::Mock(inner) => inner.get_as_vec_with_filter(filter).await,
+            GetEntitiesBuilder::Mock(inner) => inner.get_as_vec_with_filter(filter),
         }
     }
 
@@ -92,7 +92,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         match &self {
             GetEntitiesBuilder::Inner(inner) => inner.get_as_btree_map().await,
             #[cfg(feature = "mocks")]
-            GetEntitiesBuilder::Mock(inner) => inner.get_as_btree_map().await,
+            GetEntitiesBuilder::Mock(inner) => inner.get_as_btree_map(),
         }
     }
 
@@ -103,7 +103,7 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send + 'st
         match &self {
             GetEntitiesBuilder::Inner(inner) => inner.get_as_btree_map_with_filter(filter).await,
             #[cfg(feature = "mocks")]
-            GetEntitiesBuilder::Mock(inner) => inner.get_as_btree_map_with_filter(filter).await,
+            GetEntitiesBuilder::Mock(inner) => inner.get_as_btree_map_with_filter(filter),
         }
     }
 }

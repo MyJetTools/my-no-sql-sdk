@@ -165,7 +165,7 @@ impl SyncToMainNodeQueue {
         None
     }
 
-    pub async fn disconnected(&mut self) {
+    pub fn disconnected(&mut self) {
         self.connection = None;
 
         let event_on_delivery = self.on_delivery.take();

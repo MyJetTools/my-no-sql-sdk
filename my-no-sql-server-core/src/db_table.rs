@@ -3,8 +3,8 @@ use std::{collections::VecDeque, sync::Arc};
 use crate::db_snapshots::{DbPartitionSnapshot, DbTableSnapshot};
 use my_no_sql_core::db::*;
 use my_no_sql_core::my_json::json_writer::JsonArrayWriter;
+use parking_lot::RwLock;
 use rust_extensions::sorted_vec::EntityWithStrKey;
-use tokio::sync::RwLock;
 
 #[cfg(feature = "master-node")]
 use my_no_sql_core::db::DbTableAttributes;
@@ -30,13 +30,13 @@ impl DbTable {
         Arc::new(result)
     }
 
-    pub async fn get_table_as_json_array(&self) -> JsonArrayWriter {
-        let read_access = self.data.read().await;
+    pub fn get_table_as_json_array(&self) -> JsonArrayWriter {
+        let read_access = self.data.read();
         read_access.get_table_as_json_array()
     }
 
-    pub async fn get_all_as_vec_dequeue(&self) -> VecDeque<Arc<DbRow>> {
-        let read_access = self.data.read().await;
+    pub fn get_all_as_vec_dequeue(&self) -> VecDeque<Arc<DbRow>> {
+        let read_access = self.data.read();
 
         let mut result = VecDeque::new();
 
@@ -47,8 +47,8 @@ impl DbTable {
         result
     }
 
-    pub async fn get_table_snapshot(&self) -> DbTableSnapshot {
-        let read_access = self.data.read().await;
+    pub fn get_table_snapshot(&self) -> DbTableSnapshot {
+        let read_access = self.data.read();
 
         DbTableSnapshot {
             #[cfg(feature = "master-node")]
@@ -59,36 +59,36 @@ impl DbTable {
         }
     }
 
-    pub async fn get_partitions_amount(&self) -> usize {
-        let read_access = self.data.read().await;
+    pub fn get_partitions_amount(&self) -> usize {
+        let read_access = self.data.read();
         read_access.partitions.len()
     }
     #[cfg(feature = "master-node")]
-    pub async fn get_persist_table(&self) -> bool {
-        let read_access = self.data.read().await;
+    pub fn get_persist_table(&self) -> bool {
+        let read_access = self.data.read();
         read_access.attributes.persist
     }
 
-    pub async fn get_table_size(&self) -> usize {
-        let read_access = self.data.read().await;
+    pub fn get_table_size(&self) -> usize {
+        let read_access = self.data.read();
         read_access.get_table_size()
     }
 
     #[cfg(feature = "master-node")]
-    pub async fn get_max_partitions_amount(&self) -> Option<usize> {
-        let read_access = self.data.read().await;
+    pub fn get_max_partitions_amount(&self) -> Option<usize> {
+        let read_access = self.data.read();
         read_access.attributes.max_partitions_amount
     }
 
     #[cfg(feature = "master-node")]
-    pub async fn get_attributes(&self) -> DbTableAttributes {
-        let read_access = self.data.read().await;
+    pub fn get_attributes(&self) -> DbTableAttributes {
+        let read_access = self.data.read();
         read_access.attributes.clone()
     }
 
     #[cfg(feature = "master-node")]
-    pub async fn get_partition_snapshot(&self, partition_key: &str) -> Option<DbPartitionSnapshot> {
-        let read_access = self.data.read().await;
+    pub fn get_partition_snapshot(&self, partition_key: &str) -> Option<DbPartitionSnapshot> {
+        let read_access = self.data.read();
         let db_partition = read_access.get_partition(partition_key)?;
         Some(db_partition.into())
     }
