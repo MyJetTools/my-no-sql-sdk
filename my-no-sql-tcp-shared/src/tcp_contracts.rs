@@ -489,6 +489,14 @@ impl MyNoSqlTcpContract {
 }
 
 impl my_tcp_sockets::TcpContract for MyNoSqlTcpContract {
+
+    fn is_ping(&self) -> bool {
+        match self {
+            Self::Ping => true,
+            _ => false,
+        }
+    }
+
     fn is_pong(&self) -> bool {
         match self {
             Self::Pong => true,
