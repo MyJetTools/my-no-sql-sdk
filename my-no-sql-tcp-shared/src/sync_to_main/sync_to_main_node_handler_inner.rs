@@ -75,8 +75,7 @@ pub async fn to_main_node_pusher(
                     confirmation_id,
                     table_name: event.table_name,
                     partitions,
-                })
-                .await;
+                });
         }
         DeliverToMainNodeEvent::UpdatePartitionsLastReadTime {
             event,
@@ -93,8 +92,7 @@ pub async fn to_main_node_pusher(
                     confirmation_id,
                     table_name: event.table_name,
                     partitions,
-                })
-                .await;
+                });
         }
         DeliverToMainNodeEvent::UpdateRowsExpirationTime {
             event,
@@ -113,8 +111,7 @@ pub async fn to_main_node_pusher(
                     partition_key: event.partition_key,
                     row_keys,
                     expiration_time: event.expiration_time,
-                })
-                .await;
+                });
         }
         DeliverToMainNodeEvent::UpdateRowsLastReadTime {
             event,
@@ -126,8 +123,7 @@ pub async fn to_main_node_pusher(
                     table_name: event.table_name,
                     partition_key: event.partition_key,
                     row_keys: event.row_keys,
-                })
-                .await;
+                });
         }
     }
 }

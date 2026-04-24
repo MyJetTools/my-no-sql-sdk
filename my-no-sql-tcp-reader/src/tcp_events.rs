@@ -35,14 +35,14 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             name: self.app_name.to_string(),
         };
 
-        connection.send(&contract).await;
+        connection.send(&contract);
 
         for table in self.subscribers.get_tables_to_subscribe().await {
             let contract = MyNoSqlTcpContract::Subscribe {
                 table_name: table.to_string(),
             };
 
-            connection.send(&contract).await;
+            connection.send(&contract);
         }
 
         self.sync_handler
