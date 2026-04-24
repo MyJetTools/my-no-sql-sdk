@@ -118,10 +118,12 @@ TCP reader — subscribes to a table, keeps a local copy. Reads are local, no ne
 
 #### Reader API (MyNoSqlDataReaderTcp)
 
+All reader read-methods are **synchronous** (lock-free via `parking_lot` + in-memory cache). Only `wait_until_first_data_arrives` remains `async`.
+
 ```rust
-// Get all in partition → Option<Vec<(String, Arc<T>)>>
-// Tuple: (row_key, entity)
-let items = reader.get_by_partition_key("pk").await;
+// Get all in partition → Option<BTreeMap<String, Arc<T>>>
+// Key: row_key, value: entity
+let items = reader.get_by_partition_key("pk");
 
 match items {
     Some(entities) => {
@@ -132,11 +134,23 @@ match items {
     None => { /* partition not found */ }
 }
 
+// Same partition, but as a Vec
+let items = reader.get_by_partition_key_as_vec("pk"); // Option<Vec<Arc<T>>>
+
 // Get one entity → Option<Arc<T>>
-let entity = reader.get_entity("partition_key", "row_key").await;
+let entity = reader.get_entity("partition_key", "row_key");
+
+// Check partition existence → bool
+let exists = reader.has_partition("pk");
+
+// Full table snapshot as a Vec → Option<Vec<Arc<T>>>
+let all = reader.get_table_snapshot_as_vec();
+
+// Async-only method — waits until the subscription receives its first snapshot
+reader.wait_until_first_data_arrives().await;
 ```
 
-**CRITICAL:** `get_by_partition_key` returns `Option<Vec<(String, Arc<T>)>>` — **NOT** `Vec<Arc<T>>`. Always destructure the tuple.
+**CRITICAL:** `get_by_partition_key` returns `Option<BTreeMap<String, Arc<T>>>` (key = row_key), **NOT** `Vec<Arc<T>>` and **NOT** `Vec<(String, Arc<T>)>`. Use `get_by_partition_key_as_vec` when you just need the values.
 
 ---
 
@@ -217,7 +231,8 @@ let entity = SessionEntity {
 | Mistake | Fix |
 |---|---|
 | Calling writer directly without retries | Always `writer.with_retries(3).method()` |
-| Expecting `Vec<Arc<T>>` from reader `get_by_partition_key` | Returns `Option<Vec<(String, Arc<T>)>>` |
+| Awaiting reader read-methods (`reader.get_entity(...).await`) | Reader reads are **sync** now — no `.await`. Only `wait_until_first_data_arrives` is async |
+| Expecting `Vec<Arc<T>>` from reader `get_by_partition_key` | Returns `Option<BTreeMap<String, Arc<T>>>` (row_key → entity). Use `get_by_partition_key_as_vec` for just values |
 | Expecting `Option<Vec<Arc<T>>>` from writer `get_by_partition_key` | Writer returns `Result<Option<Vec<T>>>` — owned T, not Arc |
 | Duplicating entity struct across multiple projects | Shared crate |
 | Setting `time_stamp: Timestamp::now()` | Always `time_stamp: Default::default()` |
@@ -278,9 +293,9 @@ impl MyNoSqlDataReaderCallBacks<MyEntityNoSqlEntity> for MyEntityNoSqlCallback {
 
 // Reload script — reads all from reader, replaces cache
 pub async fn reload_my_entities(app: Arc<AppContext>) {
+    // Reader reads are sync — no .await
     let items = app.my_entity_reader
-        .get_by_partition_key(MyEntityNoSqlEntity::PARTITION_KEY)
-        .await;
+        .get_by_partition_key(MyEntityNoSqlEntity::PARTITION_KEY);
 
     let mut cache = app.cache.lock().await;
     match items {
@@ -295,9 +310,9 @@ pub async fn reload_my_entities(app: Arc<AppContext>) {
 ```rust
 use my_no_sql_sdk::reader::MyNoSqlDataReader;
 
+// assign_callback is sync — no .await
 app.my_entity_reader
-    .assign_callback(Arc::new(MyEntityNoSqlCallback::new(app.clone())))
-    .await;
+    .assign_callback(Arc::new(MyEntityNoSqlCallback::new(app.clone())));
 ```
 
 ### Rules (in case of full reload to local cache)
