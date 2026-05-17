@@ -11,7 +11,7 @@ pub struct FlUrlFactory {
     settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
     auto_create_table_params: Option<Arc<CreateTableParams>>,
 
-    #[cfg(feature = "with-ssh")]
+    #[cfg(all(unix, feature = "with-ssh"))]
     pub ssh_security_credentials_resolver:
         Option<Arc<dyn flurl::my_ssh::ssh_settings::SshSecurityCredentialsResolver + Send + Sync>>,
 
@@ -32,7 +32,7 @@ impl FlUrlFactory {
             settings,
             table_name,
 
-            #[cfg(feature = "with-ssh")]
+            #[cfg(all(unix, feature = "with-ssh"))]
             ssh_security_credentials_resolver: None,
         }
     }
@@ -40,7 +40,7 @@ impl FlUrlFactory {
     async fn create_fl_url(&self, url: &str) -> FlUrl {
         let fl_url = flurl::FlUrl::new(url);
 
-        #[cfg(feature = "with-ssh")]
+        #[cfg(all(unix, feature = "with-ssh"))]
         if let Some(ssh_security_credentials_resolver) = &self.ssh_security_credentials_resolver {
             return fl_url
                 .set_ssh_security_credentials_resolver(ssh_security_credentials_resolver.clone());
