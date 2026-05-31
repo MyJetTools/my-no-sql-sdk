@@ -4,7 +4,7 @@ use flurl::body::FlUrlBody;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use crate::{FlUrlFactory, MyNoSqlWriterSettings, WriterSession};
+use crate::{FlUrlFactory, MyNoSqlWriterSettings};
 
 pub struct PingDataItem {
     pub name: &'static str,
@@ -13,7 +13,6 @@ pub struct PingDataItem {
     pub table_settings: Vec<(
         String,
         Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
-        Arc<WriterSession>,
     )>,
 }
 
@@ -47,7 +46,6 @@ impl PingPool {
 
         settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
         table: &str,
-        session: Arc<WriterSession>,
     ) {
         let mut data = self.data.lock();
         if !data.started {
@@ -61,13 +59,13 @@ impl PingPool {
 
         if let Some(index) = index {
             let item = &mut data.items[index];
-            item.table_settings.push((table.to_string(), settings, session));
+            item.table_settings.push((table.to_string(), settings));
         } else {
             let item = PingDataItem {
                 name: settings.get_app_name(),
                 version: settings.get_app_version(),
 
-                table_settings: vec![(table.to_string(), settings, session)],
+                table_settings: vec![((table.to_string(), settings))],
             };
 
             data.items.push(item);
@@ -81,7 +79,6 @@ struct PingSnapshotItem {
     table_settings: Vec<(
         String,
         Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
-        Arc<WriterSession>,
     )>,
 }
 
@@ -104,42 +101,17 @@ async fn ping_loop() {
         };
 
         for itm in snapshot {
-            // All writers of the same app instance that target the same server
-            // share a single session, so we ping once per url and keep the list
-            // of session holders to update them all with whatever id the server
-            // returns.
-            let mut url_to_ping: HashMap<
-                String,
-                (
-                    Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
-                    Vec<String>,
-                    Vec<Arc<WriterSession>>,
-                ),
-            > = HashMap::new();
-
-            for (table, settings, session) in itm.table_settings.iter() {
+            let mut url_to_ping = HashMap::new();
+            for (table, settings) in itm.table_settings.iter() {
                 let url = settings.get_url().await;
                 let entry = url_to_ping
                     .entry(url)
-                    .or_insert_with(|| (settings.clone(), Vec::new(), Vec::new()));
+                    .or_insert_with(|| (settings.clone(), Vec::new()));
                 entry.1.push(table.to_string());
-                entry.2.push(session.clone());
             }
 
-            for (_, (settings, tables, sessions)) in url_to_ping {
-                // The session id is issued once (on the first ping, when we have
-                // none) and then kept for the whole lifetime of the process. We
-                // keep replaying the same id even after a server restart/GC: the
-                // server re-adopts that exact id instead of us re-keying. Only
-                // the very first ping goes out without a `session` header.
-                let existing = sessions.iter().find_map(|itm| itm.get());
-
-                let header_session = Arc::new(WriterSession::new());
-                if let Some(id) = &existing {
-                    header_session.set(id.as_ref().clone());
-                }
-
-                let factory = FlUrlFactory::new(settings, None, "", header_session);
+            for (_, (settings, tables)) in url_to_ping {
+                let factory = FlUrlFactory::new(settings, None, "");
 
                 let ping_model = PingModel {
                     name: itm.name.to_string(),
@@ -163,50 +135,13 @@ async fn ping_loop() {
                     .post(FlUrlBody::as_json(&ping_model))
                     .await;
 
-                let mut fl_url_response = match fl_url_response {
-                    Ok(response) => response,
-                    Err(err) => {
-                        println!("{}:{} ping error: {:?}", itm.name, itm.version, err);
-                        continue;
-                    }
-                };
-
-                // Resolve the id this group should hold: keep the one we already
-                // have, otherwise adopt the one the server just issued on this
-                // first ping. Old servers return no session field -> nothing to
-                // store, and we keep pinging without a header.
-                let resolved = match existing {
-                    Some(id) => Some(id.as_ref().clone()),
-                    None => read_session_from_response(&mut fl_url_response).await,
-                };
-
-                if let Some(id) = resolved {
-                    // Populate holders that don't have the id yet (the first
-                    // ping, or writers registered after the id was issued).
-                    // Never overwrite an id we already hold.
-                    for session in &sessions {
-                        if session.get().is_none() {
-                            session.set(id.clone());
-                        }
-                    }
+                if let Err(err) = &fl_url_response {
+                    println!("{}:{} ping error: {:?}", itm.name, itm.version, err);
+                    continue;
                 }
             }
         }
     }
-}
-
-async fn read_session_from_response(
-    response: &mut flurl::FlUrlResponse,
-) -> Option<String> {
-    let body = response.get_body_as_slice().await.ok()?;
-
-    if body.is_empty() {
-        return None;
-    }
-
-    let parsed: PingResponseModel = serde_json::from_slice(body).ok()?;
-
-    parsed.session.filter(|session| !session.is_empty())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,9 +149,4 @@ pub struct PingModel {
     pub name: String,
     pub version: String,
     pub tables: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PingResponseModel {
-    pub session: Option<String>,
 }

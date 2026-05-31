@@ -57,9 +57,7 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         auto_create_table_params: Option<CreateTableParams>,
         sync_period: DataSynchronizationPeriod,
     ) -> Self {
-        let session = Arc::new(crate::WriterSession::new());
-
-        crate::PING_POOL.register(settings.clone(), TEntity::TABLE_NAME, session.clone());
+        crate::PING_POOL.register(settings.clone(), TEntity::TABLE_NAME);
 
         Self {
             phantom: PhantomData,
@@ -68,7 +66,6 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
                 settings,
                 auto_create_table_params.map(|itm| itm.into()),
                 TEntity::TABLE_NAME,
-                session,
             ),
         }
     }

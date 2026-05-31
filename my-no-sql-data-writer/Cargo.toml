@@ -29,7 +29,6 @@ serde_json = "*"
 serde_derive = "*"
 lazy_static = "*"
 parking_lot = "*"
-arc-swap = "*"
 
 [dev-dependencies]
 my-no-sql-core = { path = "../my-no-sql-core" }
