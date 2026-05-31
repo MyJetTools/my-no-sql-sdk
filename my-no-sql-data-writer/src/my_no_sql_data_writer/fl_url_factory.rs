@@ -4,7 +4,7 @@ use flurl::FlUrl;
 
 use rust_extensions::UnsafeValue;
 
-use super::{CreateTableParams, DataWriterError, MyNoSqlWriterSettings};
+use super::{CreateTableParams, DataWriterError, MyNoSqlWriterSettings, WriterSession};
 
 #[derive(Clone)]
 pub struct FlUrlFactory {
@@ -17,6 +17,7 @@ pub struct FlUrlFactory {
 
     create_table_is_called: Arc<UnsafeValue<bool>>,
     table_name: &'static str,
+    session: Arc<WriterSession>,
 }
 
 impl FlUrlFactory {
@@ -24,6 +25,7 @@ impl FlUrlFactory {
         settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
         auto_create_table_params: Option<Arc<CreateTableParams>>,
         table_name: &'static str,
+        session: Arc<WriterSession>,
     ) -> Self {
         Self {
             auto_create_table_params,
@@ -31,6 +33,7 @@ impl FlUrlFactory {
             create_table_is_called: UnsafeValue::new(false).into(),
             settings,
             table_name,
+            session,
 
             #[cfg(all(unix, feature = "with-ssh"))]
             ssh_security_credentials_resolver: None,
@@ -38,7 +41,14 @@ impl FlUrlFactory {
     }
 
     async fn create_fl_url(&self, url: &str) -> FlUrl {
-        let fl_url = flurl::FlUrl::new(url);
+        let mut fl_url = flurl::FlUrl::new(url);
+
+        // Replay the session id issued during the Ping handshake so the server
+        // can attribute this request to the writer. Old servers issue no
+        // session, in which case there is nothing to send.
+        if let Some(session) = self.session.get() {
+            fl_url = fl_url.with_header("session", session.as_str());
+        }
 
         #[cfg(all(unix, feature = "with-ssh"))]
         if let Some(ssh_security_credentials_resolver) = &self.ssh_security_credentials_resolver {

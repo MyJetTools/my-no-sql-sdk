@@ -12,5 +12,7 @@ mod with_retries;
 pub use with_retries::*;
 mod fl_url_factory;
 pub use fl_url_factory::*;
+mod writer_session;
+pub use writer_session::*;
 mod my_no_sql_data_writer_builder;
 pub use my_no_sql_data_writer_builder::*;
