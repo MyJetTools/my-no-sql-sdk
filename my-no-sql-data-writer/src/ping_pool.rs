@@ -127,15 +127,19 @@ async fn ping_loop() {
             }
 
             for (_, (settings, tables, sessions)) in url_to_ping {
-                // Send the session id we already hold (if any) so the server
-                // refreshes that exact writer entry instead of allocating a new
-                // one on every ping.
-                let session = sessions
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(WriterSession::new()));
+                // The session id is issued once (on the first ping, when we have
+                // none) and then kept for the whole lifetime of the process. We
+                // keep replaying the same id even after a server restart/GC: the
+                // server re-adopts that exact id instead of us re-keying. Only
+                // the very first ping goes out without a `session` header.
+                let existing = sessions.iter().find_map(|itm| itm.get());
 
-                let factory = FlUrlFactory::new(settings, None, "", session);
+                let header_session = Arc::new(WriterSession::new());
+                if let Some(id) = &existing {
+                    header_session.set(id.as_ref().clone());
+                }
+
+                let factory = FlUrlFactory::new(settings, None, "", header_session);
 
                 let ping_model = PingModel {
                     name: itm.name.to_string(),
@@ -167,13 +171,23 @@ async fn ping_loop() {
                     }
                 };
 
-                // Adopt whatever session the latest Ping carries (the server may
-                // issue a fresh one after a restart/GC). Old servers return no
-                // session field, in which case we keep behaving as before and
-                // send no header.
-                if let Some(new_session) = read_session_from_response(&mut fl_url_response).await {
+                // Resolve the id this group should hold: keep the one we already
+                // have, otherwise adopt the one the server just issued on this
+                // first ping. Old servers return no session field -> nothing to
+                // store, and we keep pinging without a header.
+                let resolved = match existing {
+                    Some(id) => Some(id.as_ref().clone()),
+                    None => read_session_from_response(&mut fl_url_response).await,
+                };
+
+                if let Some(id) = resolved {
+                    // Populate holders that don't have the id yet (the first
+                    // ping, or writers registered after the id was issued).
+                    // Never overwrite an id we already hold.
                     for session in &sessions {
-                        session.set(new_session.clone());
+                        if session.get().is_none() {
+                            session.set(id.clone());
+                        }
                     }
                 }
             }
