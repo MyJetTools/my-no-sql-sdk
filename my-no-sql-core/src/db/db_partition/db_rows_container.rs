@@ -85,6 +85,30 @@ impl DbRowsContainer {
         removed_db_row
     }
 
+    /// Re-encodes every row to match `compressed` (compress all / decompress all),
+    /// rebuilding the data vec and the expiration index. Keys are unchanged.
+    #[cfg(feature = "master-node")]
+    pub fn apply_compression(&mut self, compressed: bool) {
+        let rows: Vec<Arc<DbRow>> = self.data.iter().cloned().collect();
+
+        let mut new_data = SortedVecOfArcWithStrKey::new();
+        let mut new_index = crate::ExpirationIndexContainer::new();
+
+        for db_row in rows {
+            let db_row = if compressed {
+                DbRow::compress_arc(db_row)
+            } else {
+                DbRow::decompress_arc(db_row)
+            };
+
+            new_index.add(&db_row);
+            new_data.insert_or_replace(db_row);
+        }
+
+        self.data = new_data;
+        self.rows_with_expiration_index = new_index;
+    }
+
     pub fn remove(&mut self, row_key: &str) -> Option<Arc<DbRow>> {
         let result = self.data.remove(row_key);
 
@@ -463,6 +487,44 @@ mod expiration_tests {
         db_rows.rows_with_expiration_index.assert_len(1);
 
         db_rows.remove("my-id");
+    }
+
+    #[test]
+    fn apply_compression_round_trips_and_keeps_expiration_index() {
+        let mut db_rows = DbRowsContainer::new();
+
+        // A row that expires (so it lands in the expiration index)...
+        let with_expires = r#"{"PartitionKey":"test","RowKey":"row-1","Expires":"2099-01-01T00:00:00","Value":"hello"}"#;
+        // ...and one that does not.
+        let without_expires = r#"{"PartitionKey":"test","RowKey":"row-2","Value":"world"}"#;
+
+        for json in [with_expires, without_expires] {
+            let now = JsonTimeStamp::now();
+            let db_row = DbJsonEntity::parse_into_db_row(json.as_bytes().into(), &now).unwrap();
+            db_rows.insert(Arc::new(db_row));
+        }
+
+        let expected_index_len = db_rows.rows_with_expiration_index.len();
+        assert_eq!(expected_index_len, 1);
+
+        let expected_renders: Vec<Vec<u8>> =
+            db_rows.get_all().map(|db_row| db_row.to_vec()).collect();
+
+        // Compress everything.
+        db_rows.apply_compression(true);
+        assert!(db_rows.get_all().all(|db_row| db_row.is_compressed()));
+        assert_eq!(db_rows.rows_with_expiration_index.len(), expected_index_len);
+        let compressed_renders: Vec<Vec<u8>> =
+            db_rows.get_all().map(|db_row| db_row.to_vec()).collect();
+        assert_eq!(expected_renders, compressed_renders);
+
+        // Decompress everything back.
+        db_rows.apply_compression(false);
+        assert!(db_rows.get_all().all(|db_row| !db_row.is_compressed()));
+        assert_eq!(db_rows.rows_with_expiration_index.len(), expected_index_len);
+        let plain_renders: Vec<Vec<u8>> =
+            db_rows.get_all().map(|db_row| db_row.to_vec()).collect();
+        assert_eq!(expected_renders, plain_renders);
     }
 
     #[test]

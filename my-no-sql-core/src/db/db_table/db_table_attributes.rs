@@ -5,6 +5,9 @@ pub struct DbTableAttributes {
     pub persist: bool,
     pub max_partitions_amount: Option<usize>,
     pub max_rows_per_partition_amount: Option<usize>,
+    /// When true, the rows of this table are kept in memory zstd-compressed
+    /// (transparently decompressed on read). Opt-in per table.
+    pub compressed: bool,
     pub created: DateTimeAsMicroseconds,
 }
 
@@ -15,6 +18,7 @@ impl DbTableAttributes {
             persist: true,
             max_partitions_amount: None,
             max_rows_per_partition_amount: None,
+            compressed: false,
         }
     }
 }
@@ -30,6 +34,7 @@ impl DbTableAttributes {
         persist: bool,
         max_partitions_amount: Option<usize>,
         max_rows_per_partition_amount: Option<usize>,
+        compressed: bool,
         created: DateTimeAsMicroseconds,
     ) -> Self {
         Self {
@@ -37,6 +42,7 @@ impl DbTableAttributes {
             created,
             max_partitions_amount,
             max_rows_per_partition_amount,
+            compressed,
         }
     }
 
@@ -64,5 +70,16 @@ impl DbTableAttributes {
         }
 
         return result;
+    }
+
+    /// Toggles the in-memory compression flag. Returns true if the value changed
+    /// (the caller is then responsible for re-encoding the already stored rows).
+    pub fn set_compressed(&mut self, compressed: bool) -> bool {
+        if self.compressed == compressed {
+            return false;
+        }
+
+        self.compressed = compressed;
+        true
     }
 }

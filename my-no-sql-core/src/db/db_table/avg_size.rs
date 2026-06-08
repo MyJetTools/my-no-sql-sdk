@@ -14,7 +14,7 @@ impl AvgSize {
     }
 
     pub fn add(&mut self, db_row: &DbRow) {
-        self.total_size += db_row.get_src_as_slice().len();
+        self.total_size += db_row.get_content_size();
         self.count += 1;
     }
 

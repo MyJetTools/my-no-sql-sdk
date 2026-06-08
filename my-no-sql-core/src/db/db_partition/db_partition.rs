@@ -80,12 +80,12 @@ impl DbPartition {
 
     #[inline]
     pub fn insert_or_replace_row(&mut self, db_row: Arc<DbRow>) -> Option<Arc<DbRow>> {
-        self.content_size += db_row.get_src_as_slice().len();
+        self.content_size += db_row.get_content_size();
 
         let result = self.rows.insert(db_row);
 
         if let Some(removed_item) = result.as_ref() {
-            self.content_size -= removed_item.get_src_as_slice().len();
+            self.content_size -= removed_item.get_content_size();
         }
 
         result
@@ -96,10 +96,10 @@ impl DbPartition {
         let mut result = Vec::new();
 
         for db_row in db_rows {
-            self.content_size += db_row.get_src_as_slice().len();
+            self.content_size += db_row.get_content_size();
 
             if let Some(removed_item) = self.rows.insert(db_row.clone()) {
-                self.content_size -= removed_item.get_src_as_slice().len();
+                self.content_size -= removed_item.get_content_size();
                 result.push(removed_item);
             }
         }
@@ -111,7 +111,7 @@ impl DbPartition {
         let result = self.rows.remove(row_key);
 
         if let Some(removed_item) = result.as_ref() {
-            self.content_size -= removed_item.get_src_as_slice().len();
+            self.content_size -= removed_item.get_content_size();
         }
         result
     }
@@ -124,7 +124,7 @@ impl DbPartition {
 
         for row_key in row_keys {
             if let Some(removed_item) = self.rows.remove(row_key.as_str()) {
-                self.content_size -= removed_item.get_src_as_slice().len();
+                self.content_size -= removed_item.get_content_size();
                 result.add(removed_item);
             }
         }
@@ -197,6 +197,12 @@ impl DbPartition {
 
     pub fn get_last_read_moment(&self) -> rust_extensions::date_time::DateTimeAsMicroseconds {
         self.last_read_moment.as_date_time()
+    }
+
+    /// Re-encodes the rows of this partition to match `compressed`. Logical content
+    /// size is unchanged, so `content_size` is left as is.
+    pub fn apply_rows_compression(&mut self, compressed: bool) {
+        self.rows.apply_compression(compressed);
     }
 }
 

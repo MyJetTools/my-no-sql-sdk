@@ -131,6 +131,14 @@ impl DbTableInner {
         db_row: Arc<DbRow>,
         #[cfg(feature = "master-node")] set_last_write_moment: Option<DateTimeAsMicroseconds>,
     ) -> (PartitionKey, Option<Arc<DbRow>>) {
+        // If the table is flagged as compressed, store the row compressed in memory.
+        #[cfg(feature = "master-node")]
+        let db_row = if self.attributes.compressed {
+            DbRow::compress_arc(db_row)
+        } else {
+            db_row
+        };
+
         self.avg_size.add(&db_row);
 
         let db_partition = self.partitions.add_partition_if_not_exists(&db_row);
@@ -152,6 +160,16 @@ impl DbTableInner {
         db_row: &Arc<DbRow>,
         #[cfg(feature = "master-node")] set_last_write_moment: Option<DateTimeAsMicroseconds>,
     ) -> Option<PartitionKey> {
+        // If the table is flagged as compressed, store the row compressed in memory.
+        #[cfg(feature = "master-node")]
+        let db_row_owned = if self.attributes.compressed {
+            DbRow::compress_arc(db_row.clone())
+        } else {
+            db_row.clone()
+        };
+        #[cfg(feature = "master-node")]
+        let db_row = &db_row_owned;
+
         self.avg_size.add(db_row);
 
         let db_partition = self.partitions.add_partition_if_not_exists(db_row);
@@ -178,6 +196,20 @@ impl DbTableInner {
         db_rows: &[Arc<DbRow>],
         #[cfg(feature = "master-node")] set_last_write_moment: Option<DateTimeAsMicroseconds>,
     ) -> (PartitionKey, Vec<Arc<DbRow>>) {
+        // If the table is flagged as compressed, store the rows compressed in memory.
+        #[cfg(feature = "master-node")]
+        let compressed_rows: Vec<Arc<DbRow>>;
+        #[cfg(feature = "master-node")]
+        let db_rows: &[Arc<DbRow>] = if self.attributes.compressed {
+            compressed_rows = db_rows
+                .iter()
+                .map(|db_row| DbRow::compress_arc(db_row.clone()))
+                .collect();
+            &compressed_rows
+        } else {
+            db_rows
+        };
+
         for db_row in db_rows {
             self.avg_size.add(db_row);
         }
@@ -197,6 +229,21 @@ impl DbTableInner {
     #[inline]
     pub fn init_partition(&mut self, db_partition: DbPartition) {
         self.partitions.insert(db_partition);
+    }
+}
+
+/// Compression
+
+#[cfg(feature = "master-node")]
+impl DbTableInner {
+    /// Re-encodes the already stored rows to match the current
+    /// `attributes.compressed` flag (compress them all, or decompress them all).
+    /// Call this after toggling the flag. Logical content size is unchanged.
+    pub fn apply_rows_compression(&mut self) {
+        let compressed = self.attributes.compressed;
+        for db_partition in self.partitions.get_partitions_mut() {
+            db_partition.apply_rows_compression(compressed);
+        }
     }
 }
 

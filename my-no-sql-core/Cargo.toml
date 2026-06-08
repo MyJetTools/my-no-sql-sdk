@@ -1,11 +1,12 @@
 [package]
 name = "my-no-sql-core"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 
 [features]
 default = []
-master-node = []
+# master-node keeps rows in memory and may compress them per-table, so it pulls in zstd
+master-node = ["dep:zstd"]
 debug_db_row = []
 
 
@@ -18,3 +19,5 @@ rust-extensions = { tag = "0.1.5", git = "https://github.com/MyJetTools/rust-ext
 tokio = { version = "*", features = ["full"] }
 serde_json = { version = "*" }
 serde = { version = "*", features = ["derive"] }
+# Per-table in-memory row compression (master-node only). Client readers do not pull this in.
+zstd = { version = "*", optional = true }
