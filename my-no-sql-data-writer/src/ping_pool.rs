@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use flurl::body::FlUrlBody;
+use flurl::body::HttpRequestBody;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -132,7 +132,7 @@ async fn ping_loop() {
                     .with_retries(3)
                     .append_path_segment("api")
                     .append_path_segment("ping")
-                    .post(FlUrlBody::as_json(&ping_model))
+                    .post(HttpRequestBody::as_json(&ping_model))
                     .await;
 
                 if let Err(err) = &fl_url_response {
