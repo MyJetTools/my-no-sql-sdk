@@ -70,6 +70,12 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         }
     }
 
+    /// Falls back to HTTP/1.1 - for MyNoSqlServer instances which do not support HTTP/2.
+    pub fn use_h1(&mut self) {
+        self.fl_url_factory.use_h1();
+        crate::PING_POOL.use_h1(self.fl_url_factory.get_settings(), TEntity::TABLE_NAME);
+    }
+
     pub async fn create_table(&self, params: CreateTableParams) -> Result<(), DataWriterError> {
         let (fl_url, url) = self.fl_url_factory.get_fl_url().await?;
 

@@ -6,14 +6,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{FlUrlFactory, MyNoSqlWriterSettings};
 
+#[derive(Clone)]
+pub struct PingTableItem {
+    pub table: String,
+    pub settings: Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
+    pub use_h1: bool,
+}
+
 pub struct PingDataItem {
     pub name: &'static str,
     pub version: &'static str,
 
-    pub table_settings: Vec<(
-        String,
-        Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
-    )>,
+    pub table_settings: Vec<PingTableItem>,
 }
 
 pub struct PingPoolInner {
@@ -57,18 +61,46 @@ impl PingPool {
             x.name == settings.get_app_name() && x.version == settings.get_app_version()
         });
 
+        let table_item = PingTableItem {
+            table: table.to_string(),
+            settings: settings.clone(),
+            use_h1: false,
+        };
+
         if let Some(index) = index {
             let item = &mut data.items[index];
-            item.table_settings.push((table.to_string(), settings));
+            item.table_settings.push(table_item);
         } else {
             let item = PingDataItem {
                 name: settings.get_app_name(),
                 version: settings.get_app_version(),
 
-                table_settings: vec![((table.to_string(), settings))],
+                table_settings: vec![table_item],
             };
 
             data.items.push(item);
+        }
+    }
+
+    /// Pings the endpoint of the given table over HTTP/1.1 - to stay in sync with
+    /// the writer which was switched to h1.
+    pub fn use_h1(
+        &self,
+        settings: &Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
+        table: &str,
+    ) {
+        let mut data = self.data.lock();
+
+        for item in data.items.iter_mut() {
+            if item.name != settings.get_app_name() || item.version != settings.get_app_version() {
+                continue;
+            }
+
+            for table_item in item.table_settings.iter_mut() {
+                if table_item.table == table {
+                    table_item.use_h1 = true;
+                }
+            }
         }
     }
 }
@@ -76,10 +108,7 @@ impl PingPool {
 struct PingSnapshotItem {
     name: &'static str,
     version: &'static str,
-    table_settings: Vec<(
-        String,
-        Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static>,
-    )>,
+    table_settings: Vec<PingTableItem>,
 }
 
 async fn ping_loop() {
@@ -102,16 +131,23 @@ async fn ping_loop() {
 
         for itm in snapshot {
             let mut url_to_ping = HashMap::new();
-            for (table, settings) in itm.table_settings.iter() {
-                let url = settings.get_url().await;
+            for table_item in itm.table_settings.iter() {
+                let url = table_item.settings.get_url().await;
                 let entry = url_to_ping
                     .entry(url)
-                    .or_insert_with(|| (settings.clone(), Vec::new()));
-                entry.1.push(table.to_string());
+                    .or_insert_with(|| (table_item.settings.clone(), Vec::new(), false));
+                entry.1.push(table_item.table.to_string());
+                // The endpoint either speaks h2 or it does not - if any writer of it
+                // was switched to h1, we ping it over h1 as well.
+                entry.2 |= table_item.use_h1;
             }
 
-            for (_, (settings, tables)) in url_to_ping {
-                let factory = FlUrlFactory::new(settings, None, "");
+            for (_, (settings, tables, use_h1)) in url_to_ping {
+                let mut factory = FlUrlFactory::new(settings, None, "");
+
+                if use_h1 {
+                    factory.use_h1();
+                }
 
                 let ping_model = PingModel {
                     name: itm.name.to_string(),

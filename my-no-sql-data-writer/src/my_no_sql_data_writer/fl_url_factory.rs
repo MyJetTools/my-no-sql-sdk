@@ -17,6 +17,7 @@ pub struct FlUrlFactory {
 
     create_table_is_called: Arc<UnsafeValue<bool>>,
     table_name: &'static str,
+    mode: flurl::FlUrlMode,
 }
 
 impl FlUrlFactory {
@@ -31,18 +32,31 @@ impl FlUrlFactory {
             create_table_is_called: UnsafeValue::new(false).into(),
             settings,
             table_name,
+            // HTTP/2 multiplexes all our requests over a single connection per
+            // endpoint. Servers which do not speak h2 can be handled with use_h1().
+            mode: flurl::FlUrlMode::H2,
 
             #[cfg(all(unix, feature = "with-ssh"))]
             ssh_security_credentials_resolver: None,
         }
     }
 
+    /// Falls back to HTTP/1.1 - for MyNoSqlServer instances which do not support HTTP/2.
+    pub fn use_h1(&mut self) {
+        self.mode = flurl::FlUrlMode::Http1Hyper;
+    }
+
+    pub fn get_settings(&self) -> &Arc<dyn MyNoSqlWriterSettings + Send + Sync + 'static> {
+        &self.settings
+    }
+
     async fn create_fl_url(&self, url: &str) -> FlUrl {
         // Replay this process's session id on every request so the server can
         // attribute all of our traffic (data requests and the Ping handshake
         // alike) to a single writer.
-        let fl_url =
-            flurl::FlUrl::new(url).with_header("session", super::get_writer_session_id());
+        let fl_url = flurl::FlUrl::new(url)
+            .update_mode(self.mode)
+            .with_header("session", super::get_writer_session_id());
 
         #[cfg(all(unix, feature = "with-ssh"))]
         if let Some(ssh_security_credentials_resolver) = &self.ssh_security_credentials_resolver {
