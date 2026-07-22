@@ -6,6 +6,7 @@ use my_json::{
 use my_logger::LogEventCtx;
 use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::{CreateTableParams, DataWriterError, OperationFailHttpContract, UpdateReadStatistics};
 
@@ -124,6 +125,44 @@ pub async fn bulk_insert_or_replace<
         .append_data_sync_period(sync_period)
         .with_table_name_as_query_param(TEntity::TABLE_NAME)
         .post(serialize_entities_to_body(entities))
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// Deletes rows described as PartitionKey -> RowKeys
+pub async fn bulk_delete<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
+    flurl: FlUrl,
+    rows_to_delete: &BTreeMap<String, Vec<String>>,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    if rows_to_delete.is_empty() {
+        return Ok(());
+    }
+
+    let body = match serde_json::to_vec(rows_to_delete) {
+        Ok(body) => body,
+        Err(err) => {
+            return Err(DataWriterError::Error(format!(
+                "Failed to serialize rows to delete: {:?}",
+                err
+            )))
+        }
+    };
+
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("Delete")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .post(HttpRequestBody::Json(body))
         .await?;
 
     if is_ok_result(&response) {

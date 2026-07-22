@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{collections::BTreeMap, marker::PhantomData};
 
 use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer};
 
@@ -49,6 +49,16 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
         let fl_url = fl_url.with_retries(self.max_attempts);
         super::execution::bulk_insert_or_replace(fl_url, entities, &self.sync_period).await
+    }
+
+    /// Deletes rows described as PartitionKey -> RowKeys
+    pub async fn bulk_delete(
+        &self,
+        rows_to_delete: &BTreeMap<String, Vec<String>>,
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::bulk_delete::<TEntity>(fl_url, rows_to_delete, &self.sync_period).await
     }
 
     pub async fn get_entity(
