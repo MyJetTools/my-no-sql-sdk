@@ -8,6 +8,10 @@ pub enum DbEntityParseFail {
     FieldRowKeyCanNotBeNull,
     JsonParseError(JsonParseError),
     PartitionKeyIsTooLong,
+    FieldTimeStampIsRequired {
+        partition_key: String,
+        row_key: String,
+    },
 }
 
 impl From<JsonParseError> for DbEntityParseFail {
