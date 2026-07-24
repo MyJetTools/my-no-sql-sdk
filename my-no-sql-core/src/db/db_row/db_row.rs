@@ -54,6 +54,8 @@ pub struct DbRowPlain {
     #[cfg(feature = "master-node")]
     time_stamp: crate::db_json_entity::KeyValueContentPosition,
     #[cfg(feature = "master-node")]
+    time_stamp_value: DateTimeAsMicroseconds,
+    #[cfg(feature = "master-node")]
     last_read_access: AtomicDateTimeAsMicroseconds,
 }
 
@@ -70,8 +72,8 @@ impl DbRowPlain {
         #[cfg(feature = "master-node")]
         let time_stamp = db_json_entity.time_stamp.unwrap();
         #[cfg(feature = "master-node")]
-        let time_stamp_value =
-            DateTimeAsMicroseconds::from_str(time_stamp.value.get_str_value(&raw)).unwrap();
+        let time_stamp_value = DateTimeAsMicroseconds::from_str(time_stamp.value.get_str_value(&raw))
+            .unwrap_or_else(DateTimeAsMicroseconds::now);
 
         Self {
             raw,
@@ -79,6 +81,8 @@ impl DbRowPlain {
             row_key: db_json_entity.row_key.value,
             #[cfg(feature = "master-node")]
             time_stamp: time_stamp.value,
+            #[cfg(feature = "master-node")]
+            time_stamp_value,
             #[cfg(feature = "master-node")]
             expires_value: if let Some(expires_value) = db_json_entity.expires_value {
                 AtomicDateTimeAsMicroseconds::new(expires_value.unix_microseconds)
@@ -100,8 +104,14 @@ impl DbRowPlain {
         self.row_key.get_str_value(&self.raw)
     }
 
+    #[cfg(feature = "master-node")]
     pub fn get_time_stamp(&self) -> &str {
-        self.row_key.get_str_value(&self.raw)
+        self.time_stamp.get_str_value(&self.raw)
+    }
+
+    #[cfg(feature = "master-node")]
+    pub fn get_time_stamp_as_date_time(&self) -> DateTimeAsMicroseconds {
+        self.time_stamp_value
     }
 
     #[cfg(feature = "master-node")]
@@ -157,6 +167,7 @@ pub struct DbRowCompressed {
     expires_value: AtomicDateTimeAsMicroseconds,
     expires: Option<crate::db_json_entity::JsonKeyValuePosition>,
     time_stamp: crate::db_json_entity::KeyValueContentPosition,
+    time_stamp_value: DateTimeAsMicroseconds,
     last_read_access: AtomicDateTimeAsMicroseconds,
 }
 
@@ -175,6 +186,7 @@ impl DbRowCompressed {
             ),
             expires: plain.expires.clone(),
             time_stamp: plain.time_stamp.clone(),
+            time_stamp_value: plain.time_stamp_value,
             last_read_access: AtomicDateTimeAsMicroseconds::new(
                 plain.last_read_access.as_date_time().unix_microseconds,
             ),
@@ -191,10 +203,15 @@ impl DbRowCompressed {
             ),
             expires: self.expires.clone(),
             time_stamp: self.time_stamp.clone(),
+            time_stamp_value: self.time_stamp_value,
             last_read_access: AtomicDateTimeAsMicroseconds::new(
                 self.last_read_access.as_date_time().unix_microseconds,
             ),
         }
+    }
+
+    fn get_time_stamp_as_date_time(&self) -> DateTimeAsMicroseconds {
+        self.time_stamp_value
     }
 
     fn decompress(&self) -> Vec<u8> {
@@ -248,14 +265,6 @@ impl DbRow {
     pub fn get_row_key(&self) -> &str {
         match self {
             DbRow::Plain(r) => r.get_row_key(),
-            #[cfg(feature = "master-node")]
-            DbRow::Compressed(r) => r.row_key_str.as_str(),
-        }
-    }
-
-    pub fn get_time_stamp(&self) -> &str {
-        match self {
-            DbRow::Plain(r) => r.get_time_stamp(),
             #[cfg(feature = "master-node")]
             DbRow::Compressed(r) => r.row_key_str.as_str(),
         }
@@ -327,6 +336,15 @@ impl DbRow {
         match db_row.as_ref() {
             DbRow::Compressed(compressed) => Arc::new(DbRow::Plain(compressed.into_plain())),
             DbRow::Plain(_) => db_row,
+        }
+    }
+
+    /// O(1) access to the row's timestamp as a `DateTimeAsMicroseconds`. Works for
+    /// both plain and compressed rows without decompressing.
+    pub fn get_time_stamp_as_date_time(&self) -> DateTimeAsMicroseconds {
+        match self {
+            DbRow::Plain(r) => r.get_time_stamp_as_date_time(),
+            DbRow::Compressed(r) => r.get_time_stamp_as_date_time(),
         }
     }
 

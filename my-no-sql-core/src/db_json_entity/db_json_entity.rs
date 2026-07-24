@@ -188,6 +188,71 @@ impl DbJsonEntity {
         Ok(result)
     }
 
+    /// Same as [`Self::parse_into_db_row`], but the entity's own `TimeStamp`
+    /// (case-insensitive) is kept instead of being overwritten by the server clock.
+    ///
+    /// The timestamp is injected in the same position as `parse_into_db_row` (right
+    /// after `RowKey`), so the resulting `raw` layout is unchanged. If the entity has
+    /// no `TimeStamp`, or its value does not parse as an ISO date-time, `fallback` is
+    /// used instead — matching [`JsonTimeStamp::parse_or_now`] but with `fallback` in
+    /// place of `now`. The returned `DateTimeAsMicroseconds` is the value that was
+    /// injected (the parsed timestamp, or the fallback).
+    pub fn parse_into_db_row_and_keep_date_time(
+        json_first_line_reader: JsonFirstLineIterator,
+        fallback: &JsonTimeStamp,
+    ) -> Result<(DbRow, DateTimeAsMicroseconds), DbEntityParseFail> {
+        // Pre-pass over the same slice to read the entity's own TimeStamp.
+        let time_stamp = {
+            let slice = json_first_line_reader.as_slice();
+            let entity = Self::new(JsonFirstLineIterator::new(slice))?;
+
+            match entity.get_time_stamp(slice) {
+                Some(value) if DateTimeAsMicroseconds::parse_iso_string(value).is_some() => {
+                    JsonTimeStamp::parse_or_now(value)
+                }
+                _ => JsonTimeStamp::from_date_time(fallback.date_time),
+            }
+        };
+
+        let db_row = Self::parse_into_db_row(json_first_line_reader, &time_stamp)?;
+
+        Ok((db_row, time_stamp.date_time))
+    }
+
+    /// Same as [`Self::parse_grouped_by_partition_key`], but each row keeps its own
+    /// `TimeStamp` (see [`Self::parse_into_db_row_and_keep_date_time`]).
+    pub fn parse_grouped_by_partition_key_and_keep_date_time(
+        src: &[u8],
+        fallback: &JsonTimeStamp,
+    ) -> Result<Vec<(String, Vec<Arc<DbRow>>)>, DbEntityParseFail> {
+        let mut result = Vec::new();
+
+        let json_array_iterator = JsonArrayIterator::new(src)?;
+
+        while let Some(json) = json_array_iterator.get_next() {
+            let json = json?;
+            let (db_row, _) = DbJsonEntity::parse_into_db_row_and_keep_date_time(
+                json.unwrap_as_object().unwrap(),
+                fallback,
+            )?;
+
+            let partition_key = db_row.get_partition_key();
+
+            match result.binary_search_by(|itm: &(String, Vec<Arc<DbRow>>)| {
+                itm.0.as_str().cmp(partition_key)
+            }) {
+                Ok(index) => {
+                    result[index].1.push(Arc::new(db_row));
+                }
+                Err(index) => {
+                    result.insert(index, (partition_key.to_string(), vec![Arc::new(db_row)]));
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn get_partition_key<'s>(&self, raw: &'s [u8]) -> &'s str {
         self.partition_key.value.get_str_value(raw)
     }
@@ -608,6 +673,131 @@ mod tests {
             DateTimeAsMicroseconds::from_str("2019-01-01T00:00:00")
                 .unwrap()
                 .unix_microseconds
+        );
+    }
+
+    // A fallback timestamp that is clearly distinct from the entity values used below,
+    // so a test that expects the entity's own timestamp can never accidentally match it.
+    fn fallback() -> JsonTimeStamp {
+        JsonTimeStamp::from_date_time(
+            DateTimeAsMicroseconds::parse_iso_string("2000-01-01T00:00:00").unwrap(),
+        )
+    }
+
+    #[test]
+    fn keep_date_time_timestamp_before_row_key() {
+        let json = r#"{"TimeStamp":"2020-05-06T07:08:09","PartitionKey":"Pk","RowKey":"Rk"}"#;
+
+        let (db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback())
+                .unwrap();
+
+        assert_eq!(db_row.get_partition_key(), "Pk");
+        assert_eq!(db_row.get_row_key(), "Rk");
+
+        let expected =
+            DateTimeAsMicroseconds::parse_iso_string("2020-05-06T07:08:09").unwrap();
+        assert_eq!(dt.unix_microseconds, expected.unix_microseconds);
+
+        // The injected raw must carry the entity's own timestamp, not the fallback.
+        let reparsed = DbJsonEntity::new(db_row.get_src_as_slice().into()).unwrap();
+        assert_eq!(
+            reparsed.get_time_stamp(db_row.get_src_as_slice()).unwrap(),
+            "2020-05-06T07:08:09"
+        );
+    }
+
+    #[test]
+    fn keep_date_time_timestamp_after_row_key() {
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk","TimeStamp":"2020-05-06T07:08:09"}"#;
+
+        let (db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback())
+                .unwrap();
+
+        assert_eq!(db_row.get_partition_key(), "Pk");
+        assert_eq!(db_row.get_row_key(), "Rk");
+
+        let expected =
+            DateTimeAsMicroseconds::parse_iso_string("2020-05-06T07:08:09").unwrap();
+        assert_eq!(dt.unix_microseconds, expected.unix_microseconds);
+
+        let reparsed = DbJsonEntity::new(db_row.get_src_as_slice().into()).unwrap();
+        assert_eq!(
+            reparsed.get_time_stamp(db_row.get_src_as_slice()).unwrap(),
+            "2020-05-06T07:08:09"
+        );
+    }
+
+    #[test]
+    fn keep_date_time_lower_case_timestamp() {
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk","timestamp":"2020-05-06T07:08:09"}"#;
+
+        let (_db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback())
+                .unwrap();
+
+        let expected =
+            DateTimeAsMicroseconds::parse_iso_string("2020-05-06T07:08:09").unwrap();
+        assert_eq!(dt.unix_microseconds, expected.unix_microseconds);
+    }
+
+    #[test]
+    fn keep_date_time_no_timestamp_field_uses_fallback() {
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk"}"#;
+
+        let fallback = fallback();
+        let (_db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback)
+                .unwrap();
+
+        assert_eq!(dt.unix_microseconds, fallback.date_time.unix_microseconds);
+    }
+
+    #[test]
+    fn keep_date_time_garbage_timestamp_uses_fallback() {
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk","TimeStamp":"not-a-date"}"#;
+
+        let fallback = fallback();
+        let (_db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback)
+                .unwrap();
+
+        assert_eq!(dt.unix_microseconds, fallback.date_time.unix_microseconds);
+    }
+
+    #[cfg(feature = "master-node")]
+    #[test]
+    fn keep_date_time_round_trips_via_get_time_stamp_as_date_time() {
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk","TimeStamp":"2020-05-06T07:08:09"}"#;
+
+        let (db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback())
+                .unwrap();
+
+        assert_eq!(
+            db_row.get_time_stamp_as_date_time().unix_microseconds,
+            dt.unix_microseconds
+        );
+    }
+
+    #[cfg(feature = "master-node")]
+    #[test]
+    fn keep_date_time_round_trips_after_compression() {
+        use crate::db::DbRow;
+
+        let json = r#"{"PartitionKey":"Pk","RowKey":"Rk","TimeStamp":"2020-05-06T07:08:09"}"#;
+
+        let (db_row, dt) =
+            DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into(), &fallback())
+                .unwrap();
+
+        let compressed = DbRow::compress_arc(std::sync::Arc::new(db_row));
+        assert!(compressed.is_compressed());
+
+        assert_eq!(
+            compressed.get_time_stamp_as_date_time().unix_microseconds,
+            dt.unix_microseconds
         );
     }
 }
