@@ -42,6 +42,55 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         super::execution::insert_or_replace_entity(fl_url, entity, &self.sync_period).await
     }
 
+    /// Optimistic-concurrency replace. See
+    /// [`super::MyNoSqlDataWriter::replace_entity`]. The `with_retries` here retries the
+    /// underlying HTTP request on transport errors; a 409 `RecordIsChanged` is a real
+    /// conflict and is returned to the caller (drive the read-modify-write loop with
+    /// [`Self::update_entity`]).
+    pub async fn replace_entity(&self, entity: &TEntity) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::replace_entity(fl_url, entity, &self.sync_period).await
+    }
+
+    /// Read-modify-write with optimistic concurrency (default attempt limit). See
+    /// [`super::MyNoSqlDataWriter::update_entity`]. Each `get`/`replace` in the loop also
+    /// goes through the HTTP-level retries of this wrapper.
+    pub async fn update_entity<TFn: FnMut(&mut TEntity)>(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        update: TFn,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        self.update_entity_with_max_attempts(
+            partition_key,
+            row_key,
+            crate::DEFAULT_UPDATE_ENTITY_MAX_ATTEMPTS,
+            update,
+        )
+        .await
+    }
+
+    /// [`Self::update_entity`] with an explicit optimistic-concurrency retry limit.
+    pub async fn update_entity_with_max_attempts<TFn: FnMut(&mut TEntity)>(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        max_attempts: usize,
+        update: TFn,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        super::execution::run_read_modify_write(
+            max_attempts,
+            update,
+            || self.get_entity(partition_key, row_key, None),
+            |entity| async move {
+                let result = self.replace_entity(&entity).await;
+                (entity, result)
+            },
+        )
+        .await
+    }
+
     pub async fn bulk_insert_or_replace(
         &self,
         entities: &[TEntity],
@@ -49,6 +98,31 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
         let fl_url = fl_url.with_retries(self.max_attempts);
         super::execution::bulk_insert_or_replace(fl_url, entities, &self.sync_period).await
+    }
+
+    /// Insert-or-replace-if-new for a single entity. The `TimeStamp` is the object's
+    /// version and is mandatory — a default/unset `Timestamp` makes the server answer
+    /// HTTP 400. See [`super::MyNoSqlDataWriter::insert_or_replace_entity_if_new`].
+    pub async fn insert_or_replace_entity_if_new(
+        &self,
+        entity: &TEntity,
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::insert_or_replace_entity_if_new(fl_url, entity, &self.sync_period).await
+    }
+
+    /// Bulk insert-or-replace-if-new. Mandatory-`TimeStamp` contract as above; empty slice
+    /// is a no-op. The chunked flow is intentionally not offered on the retries wrapper:
+    /// re-sending a chunk after a partial success would double-append rows into the
+    /// server-side accumulator, so those requests must not be blindly retried.
+    pub async fn bulk_insert_or_replace_if_new(
+        &self,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::bulk_insert_or_replace_if_new(fl_url, entities, &self.sync_period).await
     }
 
     /// Deletes rows described as PartitionKey -> RowKeys

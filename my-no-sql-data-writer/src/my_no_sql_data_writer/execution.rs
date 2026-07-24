@@ -108,6 +108,44 @@ pub async fn insert_or_replace_entity<
     return Err(DataWriterError::Error(body));
 }
 
+/// PUT /api/Row/Replace — optimistic-concurrency replace. The entity must carry the
+/// `TimeStamp` it was read with; the server compares it to the stored row's `TimeStamp`:
+/// equal → replaced (200); different → 409 [`DataWriterError::RecordIsChanged`]; row
+/// missing → 404 [`DataWriterError::RecordNotFound`]; no `TimeStamp` → 400. Use it as
+/// read-version → mutate → write-with-that-version; on a conflict re-read and retry (see
+/// `MyNoSqlDataWriter::update_entity`).
+pub async fn replace_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
+    flurl: FlUrl,
+    entity: &TEntity,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    let mut response = flurl
+        .append_path_segment(ROW_CONTROLLER)
+        .append_path_segment("Replace")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .put(HttpRequestBody::Json(entity.serialize_entity()))
+        .await?;
+
+    if response.get_status_code() == 404 {
+        let body = response.receive_body().await?;
+        let message = String::from_utf8(body)
+            .unwrap_or_else(|_| "Record not found".to_string());
+        return Err(DataWriterError::RecordNotFound(message));
+    }
+
+    // Handles 400 (deserialize_error) and 409 (RecordIsChanged).
+    check_error(&mut response).await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let body = response.receive_body().await?;
+    let body = String::from_utf8(body)?;
+    return Err(DataWriterError::Error(body));
+}
+
 pub async fn bulk_insert_or_replace<
     TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
 >(
@@ -516,6 +554,185 @@ pub async fn clean_partition_and_bulk_insert<
     return Ok(());
 }
 
+/// POST /api/Row/InsertOrReplaceIfNew — inserts a missing row, or replaces the stored
+/// one only when the incoming `TimeStamp` is strictly greater.
+///
+/// Unlike every other write, the server does NOT stamp its own time here: the client's
+/// `TimeStamp` is the object's version and is mandatory. A default (unset) `Timestamp`
+/// serializes to `null` / is omitted, and the server answers HTTP 400. The caller must
+/// set `entity.time_stamp` to a real value (e.g. `DateTimeAsMicroseconds::now().into()`).
+pub async fn insert_or_replace_entity_if_new<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entity: &TEntity,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    debug_assert!(
+        !entity.get_time_stamp().is_default(),
+        "InsertOrReplaceIfNew requires the entity to carry its own (non-default) TimeStamp; \
+         a default Timestamp serializes to null/omitted and the server rejects it with HTTP 400"
+    );
+
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(ROW_CONTROLLER)
+        .append_path_segment("InsertOrReplaceIfNew")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .post(HttpRequestBody::Json(entity.serialize_entity()))
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/InsertOrReplaceIfNew — same rule as [`insert_or_replace_entity_if_new`]
+/// applied per row. Every entity must carry its own non-default `TimeStamp`. An empty
+/// slice is a no-op (early `Ok(())`, like `bulk_insert_or_replace`).
+pub async fn bulk_insert_or_replace_if_new<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entities: &[TEntity],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    if entities.is_empty() {
+        return Ok(());
+    }
+
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "InsertOrReplaceIfNew requires every entity to carry its own (non-default) TimeStamp; \
+         a default Timestamp serializes to null/omitted and the server rejects it with HTTP 400"
+    );
+
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("InsertOrReplaceIfNew")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .post(serialize_entities_to_body(entities))
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/InsertOrReplaceIfNewByChunks — uploads one chunk of rows aside from the
+/// table. Pass `process_id = None` to start a new process (the server issues an id and
+/// returns it in `{ "processId": ".." }`); pass the previously issued id to append a
+/// further chunk. Either way the (echoed) process id is returned. Nothing is applied
+/// until the commit. Each row must carry its own non-default `TimeStamp`.
+pub async fn insert_or_replace_if_new_by_chunks_upload<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entities: &[TEntity],
+    process_id: Option<&str>,
+) -> Result<String, DataWriterError> {
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "InsertOrReplaceIfNew requires every entity to carry its own (non-default) TimeStamp; \
+         a default Timestamp serializes to null/omitted and the server rejects the commit"
+    );
+
+    let mut request = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("InsertOrReplaceIfNewByChunks")
+        .with_table_name_as_query_param(TEntity::TABLE_NAME);
+
+    if let Some(process_id) = process_id {
+        request = request.append_query_param("processId", Some(process_id));
+    }
+
+    let mut response = request.post(serialize_entities_to_body(entities)).await?;
+
+    if !is_ok_result(&response) {
+        let reason = response.receive_body().await?;
+        let reason = String::from_utf8(reason)?;
+        return Err(DataWriterError::Error(reason));
+    }
+
+    let body = response.get_body_as_slice().await?;
+
+    let contract: BulkProcessResponseContract =
+        serde_json::from_slice(body).map_err(|err| {
+            DataWriterError::Error(format!(
+                "Failed to deserialize BulkProcessResponse: {:?}",
+                err
+            ))
+        })?;
+
+    Ok(contract.process_id)
+}
+
+/// POST /api/Bulk/InsertOrReplaceIfNewByChunksCommit — applies all accumulated chunks in
+/// one operation (insert when missing, replace only when the row's `TimeStamp` is greater).
+pub async fn insert_or_replace_if_new_by_chunks_commit(
+    flurl: FlUrl,
+    process_id: &str,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("InsertOrReplaceIfNewByChunksCommit")
+        .append_query_param("processId", Some(process_id))
+        .append_data_sync_period(sync_period)
+        .post(HttpRequestBody::Empty)
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/InsertOrReplaceIfNewByChunksCancel — drops the accumulated chunks. The
+/// table is not touched.
+pub async fn insert_or_replace_if_new_by_chunks_cancel(
+    flurl: FlUrl,
+    process_id: &str,
+) -> Result<(), DataWriterError> {
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("InsertOrReplaceIfNewByChunksCancel")
+        .append_query_param("processId", Some(process_id))
+        .post(HttpRequestBody::Empty)
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+#[derive(Deserialize)]
+struct BulkProcessResponseContract {
+    #[serde(rename = "processId")]
+    process_id: String,
+}
+
 fn is_ok_result(response: &FlUrlResponse) -> bool {
     response.get_status_code() >= 200 && response.get_status_code() < 300
 }
@@ -542,7 +759,14 @@ async fn check_error(response: &mut FlUrlResponse) -> Result<(), DataWriterError
     let result = match response.get_status_code() {
         400 => Err(deserialize_error(response).await?),
 
-        409 => Err(DataWriterError::TableNotFound("".to_string())),
+        // 409 is an optimistic-concurrency conflict ("Record is changed"), not a missing
+        // table. The body is a plain-text message, not an OperationFailHttpContract.
+        409 => {
+            let body = response.get_body_as_slice().await?;
+            Err(DataWriterError::RecordIsChanged(
+                String::from_utf8_lossy(body).to_string(),
+            ))
+        }
         _ => Ok(()),
     };
 
@@ -656,6 +880,56 @@ async fn create_table_errors_handler(
     Err(result)
 }
 
+/// The optimistic-concurrency read-modify-write loop shared by every `update_entity`
+/// wrapper. Kept transport-agnostic (parameterized by `read` / `replace` closures) so the
+/// retry logic can be unit-tested without a live server.
+///
+/// - `read` fetches the current entity (its `TimeStamp` is the version to send back);
+/// - `update` mutates the caller's fields in place — it must NOT touch `time_stamp`;
+/// - `replace` writes it and hands the entity back alongside the result.
+///
+/// On [`DataWriterError::RecordIsChanged`] the loop re-reads (fresh version) and re-applies
+/// `update`, up to `max_attempts`; on exhaustion the last `RecordIsChanged` is returned.
+/// A missing row (`read` → `None`) yields `Ok(None)`; any other error is propagated as-is.
+pub(crate) async fn run_read_modify_write<TEntity, TFn, FRead, RFut, FReplace, PFut>(
+    max_attempts: usize,
+    mut update: TFn,
+    mut read: FRead,
+    mut replace: FReplace,
+) -> Result<Option<TEntity>, DataWriterError>
+where
+    TFn: FnMut(&mut TEntity),
+    FRead: FnMut() -> RFut,
+    RFut: std::future::Future<Output = Result<Option<TEntity>, DataWriterError>>,
+    FReplace: FnMut(TEntity) -> PFut,
+    PFut: std::future::Future<Output = (TEntity, Result<(), DataWriterError>)>,
+{
+    let mut attempt: usize = 0;
+
+    loop {
+        let mut entity = match read().await? {
+            Some(entity) => entity,
+            None => return Ok(None),
+        };
+
+        update(&mut entity);
+
+        let (entity, replace_result) = replace(entity).await;
+
+        match replace_result {
+            Ok(()) => return Ok(Some(entity)),
+            Err(DataWriterError::RecordIsChanged(message)) => {
+                attempt += 1;
+                if attempt >= max_attempts {
+                    return Err(DataWriterError::RecordIsChanged(message));
+                }
+                // Otherwise loop: re-read the fresh version and re-apply `update`.
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer, Timestamp};
@@ -722,5 +996,241 @@ mod tests {
         let body = as_json.into_vec();
 
         println!("{}", std::str::from_utf8(&body).unwrap());
+    }
+
+    /// Mirrors what `#[my_no_sql_entity]` generates for the TimeStamp field, so we can
+    /// verify how a real / default `Timestamp` actually serializes on the InsertOrReplaceIfNew
+    /// path (where the server requires a parseable ISO TimeStamp).
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct TimeStampedTestEntity {
+        partition_key: String,
+        row_key: String,
+        #[serde(rename = "TimeStamp")]
+        #[serde(skip_serializing_if = "my_no_sql_abstractions::skip_timestamp_serializing")]
+        time_stamp: Timestamp,
+    }
+
+    impl MyNoSqlEntity for TimeStampedTestEntity {
+        const TABLE_NAME: &'static str = "test";
+        const LAZY_DESERIALIZATION: bool = false;
+
+        fn get_partition_key(&self) -> &str {
+            &self.partition_key
+        }
+
+        fn get_row_key(&self) -> &str {
+            &self.row_key
+        }
+
+        fn get_time_stamp(&self) -> Timestamp {
+            self.time_stamp
+        }
+    }
+
+    impl MyNoSqlEntitySerializer for TimeStampedTestEntity {
+        fn serialize_entity(&self) -> Vec<u8> {
+            my_no_sql_core::entity_serializer::serialize(self)
+        }
+
+        fn deserialize_entity(src: &[u8]) -> Result<Self, String> {
+            my_no_sql_core::entity_serializer::deserialize(src)
+        }
+    }
+
+    #[test]
+    fn real_timestamp_serializes_as_parseable_iso() {
+        use rust_extensions::date_time::DateTimeAsMicroseconds;
+
+        let entity = TimeStampedTestEntity {
+            partition_key: "pk".to_string(),
+            row_key: "rk".to_string(),
+            time_stamp: DateTimeAsMicroseconds::from_str("2025-01-01T12:00:00.123456")
+                .unwrap()
+                .into(),
+        };
+
+        let body = entity.serialize_entity();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        let ts = json
+            .get("TimeStamp")
+            .expect("TimeStamp must be present for a real value")
+            .as_str()
+            .expect("TimeStamp must be a string");
+
+        // The server parses it exactly like this; if it were null/empty it would 400.
+        assert!(
+            DateTimeAsMicroseconds::parse_iso_string(ts).is_some(),
+            "serialized TimeStamp '{}' must be a parseable ISO date-time",
+            ts
+        );
+    }
+
+    #[test]
+    fn default_timestamp_is_omitted() {
+        let entity = TimeStampedTestEntity {
+            partition_key: "pk".to_string(),
+            row_key: "rk".to_string(),
+            time_stamp: Timestamp::default(),
+        };
+
+        let body = entity.serialize_entity();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // A default Timestamp is skipped entirely — the server sees no TimeStamp and
+        // rejects an InsertOrReplaceIfNew request with HTTP 400. This is exactly why the
+        // wrapper methods debug_assert on a non-default TimeStamp.
+        assert!(
+            json.get("TimeStamp").is_none(),
+            "a default Timestamp must not serialize to a value, got: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_bulk_insert_or_replace_if_new_is_ok() {
+        // The empty-slice guard returns before any request is built, so no server is needed.
+        let flurl = flurl::FlUrl::new("http://127.0.0.1:0");
+        let result = super::bulk_insert_or_replace_if_new::<TimeStampedTestEntity>(
+            flurl,
+            &[],
+            &my_no_sql_abstractions::DataSynchronizationPeriod::Immediately,
+        )
+        .await;
+
+        assert!(result.is_ok(), "empty bulk must be a no-op Ok(()), got {:?}", result.err());
+    }
+
+    #[test]
+    fn chunking_splits_as_expected() {
+        // The chunked one-call method relies on slice::chunks; pin the boundaries it produces.
+        let entities: Vec<u32> = (0..10).collect();
+
+        let lens: Vec<usize> = entities.chunks(3).map(|c| c.len()).collect();
+        assert_eq!(lens, vec![3, 3, 3, 1]);
+
+        let lens: Vec<usize> = entities.chunks(5).map(|c| c.len()).collect();
+        assert_eq!(lens, vec![5, 5]);
+
+        let lens: Vec<usize> = entities.chunks(100).map(|c| c.len()).collect();
+        assert_eq!(lens, vec![10]);
+    }
+
+    use crate::DataWriterError;
+    use std::cell::Cell;
+
+    // A tiny entity for the read-modify-write loop tests. `version` stands in for the
+    // stored TimeStamp; `value` is the field the closure mutates.
+    #[derive(Debug, PartialEq)]
+    struct LoopEntity {
+        version: i64,
+        value: i32,
+    }
+
+    #[tokio::test]
+    async fn update_loop_retries_on_conflict_then_succeeds() {
+        let read_calls = Cell::new(0i32);
+        let replace_calls = Cell::new(0i32);
+
+        // Server-side "stored version" bumps on every write attempt so the first two
+        // replaces see a stale version (409) and the third one matches.
+        let stored_version = Cell::new(10i64);
+
+        let result: Result<Option<LoopEntity>, DataWriterError> = super::run_read_modify_write(
+            5,
+            |e: &mut LoopEntity| e.value += 1,
+            || {
+                read_calls.set(read_calls.get() + 1);
+                let version = stored_version.get();
+                async move {
+                    Ok(Some(LoopEntity {
+                        version,
+                        value: 100,
+                    }))
+                }
+            },
+            |e: LoopEntity| {
+                let n = replace_calls.get() + 1;
+                replace_calls.set(n);
+                // The row moves on under us for the first two attempts.
+                stored_version.set(stored_version.get() + 1);
+                async move {
+                    if n < 3 {
+                        (e, Err(DataWriterError::RecordIsChanged("changed".to_string())))
+                    } else {
+                        (e, Ok(()))
+                    }
+                }
+            },
+        )
+        .await;
+
+        // Each attempt starts from a fresh read (value 100) and applies the closure once.
+        assert_eq!(result.unwrap(), Some(LoopEntity { version: 12, value: 101 }));
+        assert_eq!(read_calls.get(), 3, "must re-read on every conflict");
+        assert_eq!(replace_calls.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn update_loop_gives_up_after_max_attempts() {
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<Option<LoopEntity>, DataWriterError> = super::run_read_modify_write(
+            3,
+            |_e: &mut LoopEntity| {},
+            || async { Ok(Some(LoopEntity { version: 1, value: 0 })) },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move {
+                    (e, Err(DataWriterError::RecordIsChanged("still conflicting".to_string())))
+                }
+            },
+        )
+        .await;
+
+        match result {
+            Err(DataWriterError::RecordIsChanged(msg)) => assert_eq!(msg, "still conflicting"),
+            other => panic!("expected RecordIsChanged, got {:?}", other),
+        }
+        assert_eq!(replace_calls.get(), 3, "must stop exactly at max_attempts");
+    }
+
+    #[tokio::test]
+    async fn update_loop_returns_none_when_row_missing() {
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<Option<LoopEntity>, DataWriterError> = super::run_read_modify_write(
+            5,
+            |_e: &mut LoopEntity| panic!("update must not be called when the row is missing"),
+            || async { Ok(None) },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(replace_calls.get(), 0, "must not attempt a replace");
+    }
+
+    #[tokio::test]
+    async fn update_loop_propagates_other_errors_without_retry() {
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<Option<LoopEntity>, DataWriterError> = super::run_read_modify_write(
+            5,
+            |_e: &mut LoopEntity| {},
+            || async { Ok(Some(LoopEntity { version: 1, value: 0 })) },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Err(DataWriterError::RecordNotFound("gone".to_string()))) }
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Err(DataWriterError::RecordNotFound(_))));
+        assert_eq!(replace_calls.get(), 1, "a non-conflict error must not be retried");
     }
 }

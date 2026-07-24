@@ -7,6 +7,9 @@ pub enum DataWriterError {
     TableAlreadyExists(String),
     TableNotFound(String),
     RecordAlreadyExists(String),
+    /// The table exists but the addressed row does not — mirrors `RecordAlreadyExists`
+    /// for the opposite case. Distinct from `TableNotFound` (whole table missing).
+    RecordNotFound(String),
     RecordIsChanged(String),
     RequiredEntityFieldIsMissing(String),
     ServerCouldNotParseJson(String),

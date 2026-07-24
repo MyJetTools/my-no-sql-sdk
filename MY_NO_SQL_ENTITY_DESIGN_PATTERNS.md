@@ -75,6 +75,16 @@ w.insert_or_replace_entity(&entity).await.unwrap();
 // Bulk insert or replace
 w.bulk_insert_or_replace(&entities).await.unwrap();
 
+// Insert-or-replace-IF-NEW — writes only when the row is missing or the incoming
+// TimeStamp is strictly greater than the stored one (client-versioned upsert).
+// TimeStamp is MANDATORY here — see the note below.
+w.insert_or_replace_entity_if_new(&entity).await.unwrap();     // single  → 200
+w.bulk_insert_or_replace_if_new(&entities).await.unwrap();     // array   → 202, empty = no-op
+
+// Optimistic-concurrency update: read → mutate via closure → replace → retry on 409.
+// Do NOT touch time_stamp in the closure — it carries the read version. See note below.
+let updated = w.update_entity("pk", "rk", |e| e.some_field = 42).await.unwrap(); // Option<T>
+
 // Get one entity → Result<Option<T>>
 let entity = w.get_entity("partition_key", "row_key", None).await.unwrap();
 
@@ -86,6 +96,60 @@ w.delete_row("partition_key", "row_key").await.unwrap();
 ```
 
 **Important:** Writer returns **owned T** (not Arc), wrapped in `Result<Option<T>, DataWriterError>`.
+
+#### InsertOrReplaceIfNew — client-versioned upsert (mandatory TimeStamp)
+
+`*_if_new` writes a row **only when it is missing, or when the incoming `TimeStamp` is strictly greater than the stored one**. `TimeStamp` is the object's version in a distributed system and is assigned **by the client**.
+
+> ⚠️ **This is the ONE case where you must set a real `time_stamp`** (e.g. `DateTimeAsMicroseconds::now().into()`) instead of `Default::default()`. Every other write lets the server stamp its own time; here a default/unset `Timestamp` serializes to `null` / is omitted and the server answers **HTTP 400** (`... does not contain TimeStamp`).
+
+```rust
+use my_no_sql_sdk::core::rust_extensions::date_time::DateTimeAsMicroseconds;
+
+let entity = InstrumentEntity {
+    partition_key: "instruments".to_string(),
+    row_key: "EURUSD".to_string(),
+    time_stamp: DateTimeAsMicroseconds::now().into(),   // REQUIRED for *_if_new
+    name: "Euro vs Dollar".to_string(),
+    digits: 5,
+};
+
+// On with_retries:
+w.insert_or_replace_entity_if_new(&entity).await.unwrap();
+w.bulk_insert_or_replace_if_new(&entities).await.unwrap();
+
+// Chunked (base writer only, NOT with_retries — re-sending a chunk after a partial
+// success would double-append into the server-side accumulator).
+// One call: slices, starts, uploads the rest, commits; on error best-effort Cancel.
+writer.bulk_insert_or_replace_if_new_by_chunks(&entities, 1000).await.unwrap();
+// Or stream it: _start → _append(pid, ..) → _commit(pid) / _cancel(pid).
+```
+
+#### Optimistic concurrency — `update_entity` / `replace_entity`
+
+Concurrent-safe field updates. The row's `TimeStamp` is a **version token**: you send back the one you read, and the server replaces the row **only if it still matches**. A mismatch means someone else wrote in between → you re-read and retry. (Contrast with `*_if_new`, where a version conflict is a silent skip, not an error.)
+
+`update_entity` runs the read → mutate → replace → retry loop for you:
+
+```rust
+// Reads the row, applies your closure, replaces it; on a 409 conflict it re-reads the
+// fresh version and re-applies the closure, up to a retry limit (default 5).
+let updated = w.update_entity("pk", "rk", |e| {
+    e.some_field = 42;   // mutate whatever you need
+    // ⚠️ never assign e.time_stamp — it is the read version and must go back untouched
+}).await?;               // Result<Option<T>>: None if the row does not exist
+
+// Explicit retry budget:
+w.update_entity_with_max_attempts("pk", "rk", 10, |e| e.some_field = 42).await?;
+```
+
+On every retry the version comes from the fresh read (`get_entity` deserializes `TimeStamp` back), so the closure must **not** overwrite `time_stamp`.
+
+Errors: **409** → `DataWriterError::RecordIsChanged` (returned only after attempts are exhausted); **404** → `DataWriterError::RecordNotFound`; missing `TimeStamp` → **400**.
+
+The low-level `replace_entity(&entity)` (on the writer and `with_retries`) is available when you want to drive the loop yourself — the entity must carry the `TimeStamp` it was read with.
+
+> This is **not** the "set a real time_stamp" exception that `*_if_new` is: with `update_entity` you never set `time_stamp` at all — it comes from the read entity and flows straight back.
 
 #### DataSynchronizationPeriod
 
@@ -235,7 +299,10 @@ let entity = SessionEntity {
 | Expecting `Vec<Arc<T>>` from reader `get_by_partition_key` | Returns `Option<BTreeMap<String, Arc<T>>>` (row_key → entity). Use `get_by_partition_key_as_vec` for just values |
 | Expecting `Option<Vec<Arc<T>>>` from writer `get_by_partition_key` | Writer returns `Result<Option<Vec<T>>>` — owned T, not Arc |
 | Duplicating entity struct across multiple projects | Shared crate |
-| Setting `time_stamp: Timestamp::now()` | Always `time_stamp: Default::default()` |
+| Setting `time_stamp: Timestamp::now()` for normal writes | Always `time_stamp: Default::default()` — the server stamps its own time |
+| Calling an `*_if_new` method with `time_stamp: Default::default()` | The **opposite** rule: `*_if_new` needs a real client version — `time_stamp: DateTimeAsMicroseconds::now().into()`. A default TimeStamp → HTTP 400 |
+| Assigning `e.time_stamp` inside an `update_entity` closure | Never touch it — it is the read version that detects concurrent writes. Overwriting it defeats optimistic concurrency (and re-reads carry a fresh version anyway) |
+| Treating a 409 from `replace_entity` as fatal | It means the row changed under you — re-read and retry (or just use `update_entity`, which loops for you) |
 
 ---
 

@@ -87,7 +87,8 @@ The macro adds `partition_key`, `row_key` and `time_stamp` fields and implements
 let entity = InstrumentEntity {
     partition_key: "instruments".to_string(),
     row_key: "EURUSD".to_string(),
-    time_stamp: Default::default(),   // always Default — never "now"
+    time_stamp: Default::default(),   // Default for normal writes (server stamps its own time);
+                                      // set a real value only for the *_if_new methods below
     name: "Euro vs Dollar".to_string(),
     digits: 5,
 };
@@ -155,6 +156,60 @@ w.bulk_delete(&rows_to_delete).await?;
 ```
 
 The writer returns **owned** entities (`Result<Option<T>, DataWriterError>`), unlike the reader which hands out `Arc<T>`.
+
+### Insert-or-replace-if-new (client-versioned writes)
+
+`InsertOrReplaceIfNew` upserts a row **only when it is missing, or when the incoming `TimeStamp` is strictly greater than the stored one** — a last-writer-by-version upsert for distributed systems. Here the `TimeStamp` is the object's version assigned **by the client**, and it is **mandatory**.
+
+> This is the one exception to the "`time_stamp: Default::default()` — never now" rule. Every other write lets the server stamp its own time; these methods require you to set `time_stamp` to your real version. A default/unset `Timestamp` serializes to `null` / is omitted, and the server rejects the request with **HTTP 400** (`Entity with PartitionKey '..' RowKey '..' does not contain TimeStamp`).
+
+```rust
+use my_no_sql_sdk::core::rust_extensions::date_time::DateTimeAsMicroseconds;
+
+let entity = InstrumentEntity {
+    partition_key: "instruments".to_string(),
+    row_key: "EURUSD".to_string(),
+    time_stamp: DateTimeAsMicroseconds::now().into(),   // your version — REQUIRED here
+    name: "Euro vs Dollar".to_string(),
+    digits: 5,
+};
+
+// Single entity (200) and array (202, empty slice = no-op) — both also on with_retries.
+w.insert_or_replace_entity_if_new(&entity).await?;
+w.bulk_insert_or_replace_if_new(&entities).await?;
+
+// Large snapshots: upload in chunks and commit atomically. On any failure it makes a
+// best-effort Cancel of the half-uploaded process and returns the original error.
+// The chunked flow lives on the base writer (NOT on with_retries — blindly re-sending a
+// chunk after a partial success would double-append rows into the server-side accumulator).
+writer.bulk_insert_or_replace_if_new_by_chunks(&entities, 1000).await?;
+
+// Or drive the process yourself (streaming):
+let pid = writer.insert_or_replace_if_new_by_chunks_start(&first_chunk).await?;
+writer.insert_or_replace_if_new_by_chunks_append(&pid, &next_chunk).await?;
+writer.insert_or_replace_if_new_by_chunks_commit(&pid).await?;   // or ..._cancel(&pid)
+```
+
+### Optimistic-concurrency replace (`update_entity` / `replace_entity`)
+
+`Replace` writes a row **only if its stored `TimeStamp` still equals the one you read** — the classic *read version → change fields → write with that version → on conflict re-read and retry* pattern. This differs from InsertOrReplaceIfNew: a version mismatch here is an **error** (409), not a silent skip.
+
+`update_entity` runs the whole loop for you — read, apply your closure, replace, and on a 409 conflict re-read the fresh version and re-apply, up to a retry limit (default 5):
+
+```rust
+// Increment a counter safely under concurrent writers.
+let updated = w.update_entity("instruments", "EURUSD", |e| {
+    e.digits += 1;              // mutate whatever you need…
+    // …but DO NOT touch e.time_stamp — it carries the read version and must go back as-is.
+}).await?;                      // Result<Option<T>>: None if the row does not exist
+
+// Custom retry budget:
+w.update_entity_with_max_attempts("instruments", "EURUSD", 10, |e| e.digits += 1).await?;
+```
+
+The closure must not overwrite `time_stamp` — on every retry the version comes from the fresh read, and `get_entity` deserializes it back (`#[serde(rename = "TimeStamp")]`). Errors: **409** → `DataWriterError::RecordIsChanged` (surfaced only after the attempts are exhausted), **404** → `DataWriterError::RecordNotFound`, missing `TimeStamp` → **400**.
+
+The low-level `replace_entity(&entity)` is also available (both on the writer and `with_retries`) when you want to drive the loop yourself — the entity must carry the `TimeStamp` it was read with.
 
 ### HTTP/2
 
