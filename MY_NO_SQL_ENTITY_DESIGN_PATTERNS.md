@@ -81,6 +81,10 @@ w.bulk_insert_or_replace(&entities).await.unwrap();
 w.insert_or_replace_entity_if_new(&entity).await.unwrap();     // single  → 200
 w.bulk_insert_or_replace_if_new(&entities).await.unwrap();     // array   → 202, empty = no-op
 
+// Bulk replace that keeps each row's OWN TimeStamp (unconditional write, not "if new").
+// TimeStamp mandatory — see the note below.
+w.bulk_insert_or_update_with_own_timestamp(&entities).await.unwrap();
+
 // Optimistic-concurrency update: read → mutate via closure → replace → retry on 409.
 // Do NOT touch time_stamp in the closure — it carries the read version. See note below.
 let updated = w.update_entity("pk", "rk", |e| e.some_field = 42).await.unwrap(); // Option<T>
@@ -101,7 +105,7 @@ w.delete_row("partition_key", "row_key").await.unwrap();
 
 `*_if_new` writes a row **only when it is missing, or when the incoming `TimeStamp` is strictly greater than the stored one**. `TimeStamp` is the object's version in a distributed system and is assigned **by the client**.
 
-> ⚠️ **This is the ONE case where you must set a real `time_stamp`** (e.g. `DateTimeAsMicroseconds::now().into()`) instead of `Default::default()`. Every other write lets the server stamp its own time; here a default/unset `Timestamp` serializes to `null` / is omitted and the server answers **HTTP 400** (`... does not contain TimeStamp`).
+> ⚠️ **These are the cases where you must set a real `time_stamp`** (e.g. `DateTimeAsMicroseconds::now().into()`) instead of `Default::default()` — the `*_if_new` methods and `bulk_insert_or_update_with_own_timestamp`. Every other write lets the server stamp its own time; here a default/unset `Timestamp` serializes to `null` / is omitted and the server answers **HTTP 400** (`... does not contain TimeStamp`).
 
 ```rust
 use my_no_sql_sdk::core::rust_extensions::date_time::DateTimeAsMicroseconds;
@@ -124,6 +128,27 @@ w.bulk_insert_or_replace_if_new(&entities).await.unwrap();
 writer.bulk_insert_or_replace_if_new_by_chunks(&entities, 1000).await.unwrap();
 // Or stream it: _start → _append(pid, ..) → _commit(pid) / _cancel(pid).
 ```
+
+**`bulk_insert_or_update_with_own_timestamp`** sits between plain bulk and `*_if_new`: it writes every row **unconditionally** (no "if new" gate) but stores the **client's `TimeStamp`** rather than the server clock — handy for replaying a snapshot while keeping each row's original version. Same mandatory-`TimeStamp` rule (default → HTTP 400); empty slice = no-op; on writer and `with_retries`.
+
+The same `useTimestamp=true` behavior is available on the **clean-and-insert** family, for replaying a snapshot that fully replaces a table/partition while keeping each row's original version:
+
+```rust
+w.clean_table_and_bulk_insert_with_own_timestamp(&entities).await.unwrap();
+w.clean_partition_and_bulk_insert_with_own_timestamp("pk", &entities).await.unwrap();
+
+// Chunked (base writer only), atomic clean+insert at commit; None = whole table, Some(pk) = partition:
+writer.clean_and_bulk_insert_by_chunks_with_own_timestamp(None, &entities, 1000).await.unwrap();
+// low-level: _start(pk, ..) → _append(pid, ..) → _commit(pid) / _cancel(pid)
+```
+
+All of them keep the client `TimeStamp` and require a real (non-default) one — a default → HTTP 400.
+
+| Method | Writes when | Stored `TimeStamp` |
+|---|---|---|
+| `bulk_insert_or_replace` | always | server clock (`now`) — `time_stamp: Default::default()` |
+| `bulk_insert_or_update_with_own_timestamp` | always | client's `TimeStamp` (must be real) |
+| `bulk_insert_or_replace_if_new` | only if missing or incoming `TimeStamp` strictly greater | client's `TimeStamp` (must be real) |
 
 #### Optimistic concurrency — `update_entity` / `replace_entity`
 
@@ -300,7 +325,7 @@ let entity = SessionEntity {
 | Expecting `Option<Vec<Arc<T>>>` from writer `get_by_partition_key` | Writer returns `Result<Option<Vec<T>>>` — owned T, not Arc |
 | Duplicating entity struct across multiple projects | Shared crate |
 | Setting `time_stamp: Timestamp::now()` for normal writes | Always `time_stamp: Default::default()` — the server stamps its own time |
-| Calling an `*_if_new` method with `time_stamp: Default::default()` | The **opposite** rule: `*_if_new` needs a real client version — `time_stamp: DateTimeAsMicroseconds::now().into()`. A default TimeStamp → HTTP 400 |
+| Calling any `*_if_new` or `*_with_own_timestamp` method with `time_stamp: Default::default()` | The **opposite** rule: these send the client's version — `time_stamp: DateTimeAsMicroseconds::now().into()`. A default TimeStamp → HTTP 400 |
 | Assigning `e.time_stamp` inside an `update_entity` closure | Never touch it — it is the read version that detects concurrent writes. Overwriting it defeats optimistic concurrency (and re-reads carry a fresh version anyway) |
 | Treating a 409 from `replace_entity` as fatal | It means the row changed under you — re-read and retry (or just use `update_entity`, which loops for you) |
 

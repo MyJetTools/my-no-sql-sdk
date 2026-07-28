@@ -174,6 +174,50 @@ pub async fn bulk_insert_or_replace<
     return Err(DataWriterError::Error(reason));
 }
 
+/// POST /api/Bulk/InsertOrReplace with `useTimestamp=true` — bulk insert-or-replace that
+/// KEEPS each entity's own `TimeStamp` instead of letting the server stamp its own clock.
+///
+/// Unlike [`bulk_insert_or_replace_if_new`], this is an **unconditional** replace (no
+/// "strictly greater" check): every row is written, but the stored row carries the
+/// client-supplied `TimeStamp`. Because of that the `TimeStamp` is **mandatory** — a
+/// default/unset one serializes to `null`/omitted and the server answers **HTTP 400**.
+/// An empty slice is a no-op.
+pub async fn bulk_insert_or_update_with_own_timestamp<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entities: &[TEntity],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    if entities.is_empty() {
+        return Ok(());
+    }
+
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "bulk_insert_or_update_with_own_timestamp requires every entity to carry its own \
+         (non-default) TimeStamp; a default Timestamp serializes to null/omitted and the \
+         server rejects it with HTTP 400"
+    );
+
+    let response = flurl
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("InsertOrReplace")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .append_query_param("useTimestamp", Some("true"))
+        .post(serialize_entities_to_body(entities))
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
 /// Deletes rows described as PartitionKey -> RowKeys
 pub async fn bulk_delete<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
     flurl: FlUrl,
@@ -554,6 +598,69 @@ pub async fn clean_partition_and_bulk_insert<
     return Ok(());
 }
 
+/// [`clean_table_and_bulk_insert`] with `useTimestamp=true`: the whole table is cleaned and
+/// re-inserted, but each row keeps its **own `TimeStamp`** instead of the server clock.
+/// Every entity must carry a real (non-default) `TimeStamp`, otherwise the server rejects
+/// the request with HTTP 400. (An empty slice still cleans the table — nothing to insert.)
+pub async fn clean_table_and_bulk_insert_with_own_timestamp<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entities: &[TEntity],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "clean_table_and_bulk_insert_with_own_timestamp requires every entity to carry its \
+         own (non-default) TimeStamp; a default one → HTTP 400"
+    );
+
+    let mut response = flurl
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("CleanAndBulkInsert")
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .append_data_sync_period(sync_period)
+        .append_query_param("useTimestamp", Some("true"))
+        .post(serialize_entities_to_body(entities))
+        .await?;
+
+    check_error(&mut response).await?;
+
+    return Ok(());
+}
+
+/// [`clean_partition_and_bulk_insert`] with `useTimestamp=true`: the partition is cleaned and
+/// re-inserted, but each row keeps its **own `TimeStamp`**. Every entity must carry a real
+/// (non-default) `TimeStamp`, otherwise the server rejects the request with HTTP 400.
+pub async fn clean_partition_and_bulk_insert_with_own_timestamp<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    partition_key: &str,
+    entities: &[TEntity],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "clean_partition_and_bulk_insert_with_own_timestamp requires every entity to carry its \
+         own (non-default) TimeStamp; a default one → HTTP 400"
+    );
+
+    let mut response = flurl
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("CleanAndBulkInsert")
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .append_data_sync_period(sync_period)
+        .with_partition_key_as_query_param(partition_key)
+        .append_query_param("useTimestamp", Some("true"))
+        .post(serialize_entities_to_body(entities))
+        .await?;
+
+    check_error(&mut response).await?;
+
+    return Ok(());
+}
+
 /// POST /api/Row/InsertOrReplaceIfNew — inserts a missing row, or replaces the stored
 /// one only when the incoming `TimeStamp` is strictly greater.
 ///
@@ -714,6 +821,110 @@ pub async fn insert_or_replace_if_new_by_chunks_cancel(
         .append_path_segment(API_SEGMENT)
         .append_path_segment(BULK_CONTROLLER)
         .append_path_segment("InsertOrReplaceIfNewByChunksCancel")
+        .append_query_param("processId", Some(process_id))
+        .post(HttpRequestBody::Empty)
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/CleanAndBulkInsertByChunks with `useTimestamp=true` — uploads one chunk of
+/// a clean-and-bulk-insert process that keeps each row's own `TimeStamp`. `process_id = None`
+/// starts a new process (the server issues the id and returns it); `partition_key` is honored
+/// only on that first (start) chunk and scopes the clean to that partition (`None` = whole
+/// table). Pass the issued id on every following chunk. Nothing is applied until the commit.
+/// Each row must carry a non-default `TimeStamp`.
+pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_upload<
+    TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
+>(
+    flurl: FlUrl,
+    entities: &[TEntity],
+    partition_key: Option<&str>,
+    process_id: Option<&str>,
+) -> Result<String, DataWriterError> {
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "clean_and_bulk_insert_by_chunks_with_own_timestamp requires every entity to carry its \
+         own (non-default) TimeStamp; a default one → the chunk is rejected with HTTP 400"
+    );
+
+    let mut request = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("CleanAndBulkInsertByChunks")
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .append_query_param("useTimestamp", Some("true"));
+
+    // partitionKey is taken into account only when a new process is started.
+    if let Some(partition_key) = partition_key {
+        request = request.with_partition_key_as_query_param(partition_key);
+    }
+
+    if let Some(process_id) = process_id {
+        request = request.append_query_param("processId", Some(process_id));
+    }
+
+    let mut response = request.post(serialize_entities_to_body(entities)).await?;
+
+    if !is_ok_result(&response) {
+        let reason = response.receive_body().await?;
+        let reason = String::from_utf8(reason)?;
+        return Err(DataWriterError::Error(reason));
+    }
+
+    let body = response.get_body_as_slice().await?;
+
+    let contract: BulkProcessResponseContract = serde_json::from_slice(body).map_err(|err| {
+        DataWriterError::Error(format!(
+            "Failed to deserialize BulkProcessResponse: {:?}",
+            err
+        ))
+    })?;
+
+    Ok(contract.process_id)
+}
+
+/// POST /api/Bulk/CleanAndBulkInsertByChunksCommit — cleans the table (or the partition the
+/// process was started with) and inserts every accumulated row atomically.
+pub async fn clean_and_bulk_insert_by_chunks_commit(
+    flurl: FlUrl,
+    process_id: &str,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<(), DataWriterError> {
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("CleanAndBulkInsertByChunksCommit")
+        .append_query_param("processId", Some(process_id))
+        .append_data_sync_period(sync_period)
+        .post(HttpRequestBody::Empty)
+        .await?;
+
+    if is_ok_result(&response) {
+        return Ok(());
+    }
+
+    let reason = response.receive_body().await?;
+    let reason = String::from_utf8(reason)?;
+    return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/CleanAndBulkInsertByChunksCancel — drops the accumulated chunks. The table
+/// is not touched.
+pub async fn clean_and_bulk_insert_by_chunks_cancel(
+    flurl: FlUrl,
+    process_id: &str,
+) -> Result<(), DataWriterError> {
+    let response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("CleanAndBulkInsertByChunksCancel")
         .append_query_param("processId", Some(process_id))
         .post(HttpRequestBody::Empty)
         .await?;

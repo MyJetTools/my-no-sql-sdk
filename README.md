@@ -190,6 +190,40 @@ writer.insert_or_replace_if_new_by_chunks_append(&pid, &next_chunk).await?;
 writer.insert_or_replace_if_new_by_chunks_commit(&pid).await?;   // or ..._cancel(&pid)
 ```
 
+### Bulk replace keeping the client `TimeStamp`
+
+`bulk_insert_or_update_with_own_timestamp` is `bulk_insert_or_replace` with the server's `useTimestamp=true` flag: every row is written **unconditionally** (no "if new" check), but the stored row keeps the **client-supplied `TimeStamp`** instead of the server clock. Use it to replay a snapshot while preserving each row's original version. Like `*_if_new`, the `TimeStamp` is mandatory — a default one → **HTTP 400**; empty slice is a no-op. Available on the writer and `with_retries`.
+
+```rust
+// entities each carry their own time_stamp (a real value, not Default)
+w.bulk_insert_or_update_with_own_timestamp(&entities).await?;
+```
+
+The `useTimestamp=true` flag applies to the clean-and-insert family too — same mandatory-`TimeStamp` rule:
+
+```rust
+// Clean the table (or one partition) and re-insert, keeping each row's own TimeStamp.
+w.clean_table_and_bulk_insert_with_own_timestamp(&entities).await?;
+w.clean_partition_and_bulk_insert_with_own_timestamp("instruments", &entities).await?;
+
+// Chunked variant for large snapshots — starts a process, uploads the rest, commits so the
+// clean + insert are atomic; best-effort Cancel on any failure. Base writer only (not
+// with_retries). `partition_key: None` cleans the whole table; `Some(pk)` only that partition.
+writer.clean_and_bulk_insert_by_chunks_with_own_timestamp(None, &entities, 1000).await?;
+// Or stream it:
+let pid = writer.clean_and_bulk_insert_by_chunks_with_own_timestamp_start(None, &first).await?;
+writer.clean_and_bulk_insert_by_chunks_with_own_timestamp_append(&pid, &next).await?;
+writer.clean_and_bulk_insert_by_chunks_with_own_timestamp_commit(&pid).await?; // or ..._cancel(&pid)
+```
+
+The three bulk-write modes at a glance:
+
+| Method | Write condition | Stored `TimeStamp` |
+|---|---|---|
+| `bulk_insert_or_replace` | always | server clock (`now`) |
+| `bulk_insert_or_update_with_own_timestamp` | always | the client's `TimeStamp` |
+| `bulk_insert_or_replace_if_new` | only if missing or incoming `TimeStamp` is strictly greater | the client's `TimeStamp` |
+
 ### Optimistic-concurrency replace (`update_entity` / `replace_entity`)
 
 `Replace` writes a row **only if its stored `TimeStamp` still equals the one you read** — the classic *read version → change fields → write with that version → on conflict re-read and retry* pattern. This differs from InsertOrReplaceIfNew: a version mismatch here is an **error** (409), not a silent skip.

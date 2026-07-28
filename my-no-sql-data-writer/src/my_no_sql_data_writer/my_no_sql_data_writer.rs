@@ -199,6 +199,24 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         super::execution::bulk_insert_or_replace(fl_url, entities, &self.sync_period).await
     }
 
+    /// Same as [`Self::bulk_insert_or_replace`], but each row is stored with **its own
+    /// `TimeStamp`** (server sends `useTimestamp=true`) instead of the server clock. This
+    /// is still an unconditional replace — every row is written — it just preserves the
+    /// client-supplied version. Every entity must carry a real (non-default) `time_stamp`,
+    /// otherwise the server rejects the request with HTTP 400. Empty slice is a no-op.
+    pub async fn bulk_insert_or_update_with_own_timestamp(
+        &self,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::bulk_insert_or_update_with_own_timestamp(
+            fl_url,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
     /// Deletes rows described as PartitionKey -> RowKeys
     pub async fn bulk_delete(
         &self,
@@ -358,6 +376,151 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
             &self.sync_period,
         )
         .await
+    }
+
+    /// Same as [`Self::clean_table_and_bulk_insert`], but each re-inserted row keeps its
+    /// **own `TimeStamp`** (server sends `useTimestamp=true`) instead of the server clock.
+    /// Every entity must carry a real (non-default) `time_stamp`, otherwise the server
+    /// rejects the request with HTTP 400.
+    pub async fn clean_table_and_bulk_insert_with_own_timestamp(
+        &self,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_table_and_bulk_insert_with_own_timestamp(
+            fl_url,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
+    /// Same as [`Self::clean_partition_and_bulk_insert`], but each re-inserted row keeps its
+    /// **own `TimeStamp`** (`useTimestamp=true`). Every entity must carry a real (non-default)
+    /// `time_stamp`, otherwise the server rejects the request with HTTP 400.
+    pub async fn clean_partition_and_bulk_insert_with_own_timestamp(
+        &self,
+        partition_key: &str,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_partition_and_bulk_insert_with_own_timestamp(
+            fl_url,
+            partition_key,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
+    /// One-call chunked clean-and-bulk-insert that keeps each row's **own `TimeStamp`**
+    /// (`useTimestamp=true`). Slices `entities` into chunks of `chunk_size`, starts a
+    /// server-side process with the first chunk (scoped to `partition_key`, or the whole
+    /// table when `None`), uploads the rest under the issued `processId`, then commits so
+    /// the clean + insert happen atomically. On any failure a best-effort `Cancel` is issued
+    /// and the original error is returned. Every entity must carry a non-default `time_stamp`.
+    ///
+    /// An empty slice is a no-op — note that, unlike the non-chunked clean, it does **not**
+    /// clean the table (no process is started). Use `clean_*_with_own_timestamp(&[])` to
+    /// clean without inserting.
+    pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp(
+        &self,
+        partition_key: Option<&str>,
+        entities: &[TEntity],
+        chunk_size: usize,
+    ) -> Result<(), DataWriterError> {
+        assert!(chunk_size > 0, "chunk_size must be greater than 0");
+
+        if entities.is_empty() {
+            return Ok(());
+        }
+
+        let mut chunks = entities.chunks(chunk_size);
+
+        let process_id = self
+            .clean_and_bulk_insert_by_chunks_with_own_timestamp_start(
+                partition_key,
+                chunks.next().unwrap(),
+            )
+            .await?;
+
+        let result = async {
+            for chunk in chunks {
+                self.clean_and_bulk_insert_by_chunks_with_own_timestamp_append(&process_id, chunk)
+                    .await?;
+            }
+            self.clean_and_bulk_insert_by_chunks_with_own_timestamp_commit(&process_id)
+                .await
+        }
+        .await;
+
+        if let Err(err) = result {
+            let _ = self
+                .clean_and_bulk_insert_by_chunks_with_own_timestamp_cancel(&process_id)
+                .await;
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
+    /// Low-level chunked clean flow: starts a new process by uploading the first chunk
+    /// (cleaning `partition_key`, or the whole table when `None`) and returns the
+    /// server-issued `processId`. Nothing is applied until the commit. Keeps each row's own
+    /// `TimeStamp`; each row must carry a non-default one.
+    pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_start(
+        &self,
+        partition_key: Option<&str>,
+        entities: &[TEntity],
+    ) -> Result<String, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_and_bulk_insert_by_chunks_with_own_timestamp_upload(
+            fl_url,
+            entities,
+            partition_key,
+            None,
+        )
+        .await
+    }
+
+    /// Low-level chunked clean flow: appends a further chunk to an already-started process.
+    pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_append(
+        &self,
+        process_id: &str,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_and_bulk_insert_by_chunks_with_own_timestamp_upload(
+            fl_url,
+            entities,
+            None,
+            Some(process_id),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Low-level chunked clean flow: commits the process (cleans + inserts every uploaded row).
+    pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_commit(
+        &self,
+        process_id: &str,
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_and_bulk_insert_by_chunks_commit(
+            fl_url,
+            process_id,
+            &self.sync_period,
+        )
+        .await
+    }
+
+    /// Low-level chunked clean flow: cancels the process, dropping the uploaded rows.
+    pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_cancel(
+        &self,
+        process_id: &str,
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::clean_and_bulk_insert_by_chunks_cancel(fl_url, process_id).await
     }
 
     /// Insert-or-replace-if-new for a single entity: the row is written only when it is

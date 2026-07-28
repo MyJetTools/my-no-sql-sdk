@@ -100,6 +100,23 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         super::execution::bulk_insert_or_replace(fl_url, entities, &self.sync_period).await
     }
 
+    /// Bulk insert-or-replace that keeps each entity's own `TimeStamp` (`useTimestamp=true`).
+    /// See [`super::MyNoSqlDataWriter::bulk_insert_or_update_with_own_timestamp`]. Every
+    /// entity must carry a real (non-default) `time_stamp`; empty slice is a no-op.
+    pub async fn bulk_insert_or_update_with_own_timestamp(
+        &self,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::bulk_insert_or_update_with_own_timestamp(
+            fl_url,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
     /// Insert-or-replace-if-new for a single entity. The `TimeStamp` is the object's
     /// version and is mandatory — a default/unset `Timestamp` makes the server answer
     /// HTTP 400. See [`super::MyNoSqlDataWriter::insert_or_replace_entity_if_new`].
@@ -282,6 +299,44 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
         let fl_url = fl_url.with_retries(self.max_attempts);
         super::execution::clean_partition_and_bulk_insert(
+            fl_url,
+            partition_key,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
+    /// Clean-and-bulk-insert keeping each row's own `TimeStamp` (`useTimestamp=true`). See
+    /// [`super::MyNoSqlDataWriter::clean_table_and_bulk_insert_with_own_timestamp`]. Every
+    /// entity must carry a real (non-default) `time_stamp`.
+    pub async fn clean_table_and_bulk_insert_with_own_timestamp(
+        &self,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::clean_table_and_bulk_insert_with_own_timestamp(
+            fl_url,
+            entities,
+            &self.sync_period,
+        )
+        .await
+    }
+
+    /// Clean-partition-and-bulk-insert keeping each row's own `TimeStamp` (`useTimestamp=true`).
+    /// See [`super::MyNoSqlDataWriter::clean_partition_and_bulk_insert_with_own_timestamp`].
+    /// Every entity must carry a real (non-default) `time_stamp`. (The chunked clean flow is
+    /// only on the base writer — re-sending a chunk after a partial success would double-append
+    /// into the server-side accumulator.)
+    pub async fn clean_partition_and_bulk_insert_with_own_timestamp(
+        &self,
+        partition_key: &str,
+        entities: &[TEntity],
+    ) -> Result<(), DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::clean_partition_and_bulk_insert_with_own_timestamp(
             fl_url,
             partition_key,
             entities,
