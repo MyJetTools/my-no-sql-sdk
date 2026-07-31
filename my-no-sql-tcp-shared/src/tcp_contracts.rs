@@ -72,6 +72,13 @@ pub enum MyNoSqlTcpContract {
     Confirmation {
         confirmation_id: i64,
     },
+    /// Fixes the namespace of the connection. Has to be sent right after the Greeting and
+    /// before any Subscribe. A server which knows nothing about namespaces answers with
+    /// `InvalidPacketId` and breaks the connection - which is exactly what we want, since
+    /// falling back to the default namespace silently would read the wrong data.
+    SetNamespace {
+        namespace: String,
+    },
 }
 
 impl MyNoSqlTcpContract {
@@ -312,6 +319,12 @@ impl MyNoSqlTcpContract {
                 let confirmation_id = socket_reader.read_i64().await?;
                 Ok(Self::Confirmation { confirmation_id })
             }
+            SET_NAMESPACE => {
+                // Version is read and ignored - it is a room for the future extensions
+                let _protocol_version = socket_reader.read_byte().await?;
+                let namespace = crate::common_deserializes::read_pascal_string(socket_reader).await?;
+                Ok(Self::SetNamespace { namespace })
+            }
             _ => Err(ReadingTcpContractFail::InvalidPacketId(packet_no)),
         };
 
@@ -484,6 +497,12 @@ impl MyNoSqlTcpContract {
                 write_buffer.write_byte(0); // Protocol version
                 write_buffer.write_i64(*confirmation_id);
             }
+
+            Self::SetNamespace { namespace } => {
+                write_buffer.write_byte(SET_NAMESPACE);
+                write_buffer.write_byte(0); // Protocol version
+                write_buffer.write_pascal_string(namespace.as_str());
+            }
         }
     }
 }
@@ -511,4 +530,36 @@ impl TcpSerializerState<MyNoSqlTcpContract> for () {
     }
 
     fn apply_tcp_contract(&mut self, _contract: &MyNoSqlTcpContract) {}
+}
+
+#[cfg(test)]
+mod test {
+    use my_tcp_sockets::socket_reader::SocketReaderInMem;
+
+    use super::MyNoSqlTcpContract;
+    use crate::tcp_packets::SET_NAMESPACE;
+
+    #[tokio::test]
+    async fn test_set_namespace_serialize_deserialize() {
+        let mut buffer = Vec::new();
+
+        MyNoSqlTcpContract::SetNamespace {
+            namespace: "alpha".to_string(),
+        }
+        .serialize(&mut buffer);
+
+        assert_eq!(SET_NAMESPACE, buffer[0]);
+        assert_eq!(0, buffer[1]); // Protocol version
+
+        let mut socket_reader = SocketReaderInMem::new(buffer);
+
+        let result = MyNoSqlTcpContract::deserialize(&mut socket_reader)
+            .await
+            .unwrap();
+
+        match result {
+            MyNoSqlTcpContract::SetNamespace { namespace } => assert_eq!("alpha", namespace),
+            _ => panic!("Unexpected contract: {:?}", result),
+        }
+    }
 }

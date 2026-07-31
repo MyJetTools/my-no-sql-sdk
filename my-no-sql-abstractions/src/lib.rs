@@ -4,3 +4,7 @@ pub use data_sync_period::DataSynchronizationPeriod;
 pub use my_no_sql_entity::*;
 mod timestamp_type;
 pub use timestamp_type::*;
+mod connection_string;
+mod namespace;
+pub use connection_string::*;
+pub use namespace::*;

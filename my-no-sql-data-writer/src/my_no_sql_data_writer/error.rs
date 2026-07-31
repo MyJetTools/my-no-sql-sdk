@@ -13,12 +13,21 @@ pub enum DataWriterError {
     RecordIsChanged(String),
     RequiredEntityFieldIsMissing(String),
     ServerCouldNotParseJson(String),
+    /// Connection string returned by the settings can not be parsed - it is better not to
+    /// work at all than to work with a wrong host or namespace.
+    InvalidConnectionString(String),
     FromUtf8Error(FromUtf8Error),
     Utf8Error(Utf8Error),
     Error(String),
     FlUrlError(FlUrlError),
     HyperError(flurl::hyper::Error),
     JsonParseError(my_json::json_reader::JsonParseError),
+}
+
+impl From<my_no_sql_abstractions::ConnectionStringError> for DataWriterError {
+    fn from(src: my_no_sql_abstractions::ConnectionStringError) -> Self {
+        Self::InvalidConnectionString(src.to_string())
+    }
 }
 
 impl From<flurl::hyper::Error> for DataWriterError {

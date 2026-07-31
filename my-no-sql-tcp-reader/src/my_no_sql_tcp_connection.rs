@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
-use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer};
+use arc_swap::ArcSwapOption;
+use my_no_sql_abstractions::{parse_connection_string, MyNoSqlEntity, MyNoSqlEntitySerializer};
 use my_no_sql_tcp_shared::{sync_to_main::SyncToMainNodeHandler, MyNoSqlTcpSerializerFactory};
 use my_tcp_sockets::{TcpClient, TlsSettings};
 use rust_extensions::{AppStates, StrOrString};
@@ -11,12 +12,33 @@ use crate::{
 
 pub struct TcpConnectionSettings {
     settings: Arc<dyn MyNoSqlTcpConnectionSettings + Sync + Send + 'static>,
+    /// Namespace parsed out of the connection string. Shared with [`TcpEvents`] which sends it
+    /// to the server right after the Greeting.
+    namespace: Arc<ArcSwapOption<String>>,
 }
 
 #[async_trait::async_trait]
 impl my_tcp_sockets::TcpClientSocketSettings for TcpConnectionSettings {
     async fn get_host_port(&self) -> Option<String> {
-        self.settings.get_host_port().await.into()
+        let connection_string = self.settings.get_host_port().await;
+
+        // Connection string is resolved before every connect attempt - so is the namespace,
+        // which the application can change in its settings without a restart.
+        let connection_string = match parse_connection_string(connection_string.as_str()) {
+            Ok(result) => result,
+            Err(err) => panic!(
+                "Invalid MyNoSqlServer connection string '{}'. {}",
+                connection_string, err
+            ),
+        };
+
+        self.namespace.store(
+            connection_string
+                .get_namespace_to_send()
+                .map(|namespace| Arc::new(namespace.to_string())),
+        );
+
+        connection_string.host.into()
     }
 
     async fn get_tls_settings(&self) -> Option<TlsSettings> {
@@ -37,7 +59,12 @@ impl MyNoSqlTcpConnection {
         app_name: impl Into<StrOrString<'static>>,
         settings: Arc<dyn MyNoSqlTcpConnectionSettings + Sync + Send + 'static>,
     ) -> Self {
-        let settings = TcpConnectionSettings { settings };
+        let namespace = Arc::new(ArcSwapOption::empty());
+
+        let settings = TcpConnectionSettings {
+            settings,
+            namespace: namespace.clone(),
+        };
 
         let app_name: StrOrString<'static> = app_name.into();
 
@@ -48,6 +75,7 @@ impl MyNoSqlTcpConnection {
             tcp_events: TcpEvents::new(
                 app_name.to_string(),
                 Arc::new(SyncToMainNodeHandler::new()),
+                namespace,
             ),
             app_states: Arc::new(AppStates::create_un_initialized()),
         }

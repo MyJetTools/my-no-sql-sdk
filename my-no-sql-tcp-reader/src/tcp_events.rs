@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use arc_swap::ArcSwapOption;
 use my_no_sql_tcp_shared::{
     sync_to_main::SyncToMainNodeHandler, MyNoSqlReaderTcpSerializer, MyNoSqlTcpContract,
 };
@@ -14,14 +15,22 @@ pub type MyNoSqlTcpConnection =
 #[derive(Clone)]
 pub struct TcpEvents {
     app_name: Arc<String>,
+    /// Namespace resolved from the connection string on the last connect attempt. `None` means
+    /// the default namespace - nothing is sent to the server in that case.
+    namespace: Arc<ArcSwapOption<String>>,
     pub subscribers: Subscribers,
     pub sync_handler: Arc<SyncToMainNodeHandler>,
 }
 
 impl TcpEvents {
-    pub fn new(app_name: String, sync_handler: Arc<SyncToMainNodeHandler>) -> Self {
+    pub fn new(
+        app_name: String,
+        sync_handler: Arc<SyncToMainNodeHandler>,
+        namespace: Arc<ArcSwapOption<String>>,
+    ) -> Self {
         Self {
             app_name: Arc::new(app_name),
+            namespace,
             subscribers: Subscribers::new(),
             sync_handler,
         }
@@ -36,6 +45,17 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
         };
 
         connection.send(&contract);
+
+        // Namespace has to be fixed by the server before the very first subscription - hence it
+        // goes right after the Greeting and before any Subscribe. Default namespace is not sent
+        // at all: it is what the server uses anyway.
+        if let Some(namespace) = self.namespace.load_full() {
+            let contract = MyNoSqlTcpContract::SetNamespace {
+                namespace: namespace.to_string(),
+            };
+
+            connection.send(&contract);
+        }
 
         for table in self.subscribers.get_tables_to_subscribe().iter() {
             let contract = MyNoSqlTcpContract::Subscribe {
@@ -60,6 +80,7 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             MyNoSqlTcpContract::Pong => {}
             MyNoSqlTcpContract::Greeting { name: _ } => {}
             MyNoSqlTcpContract::Subscribe { table_name: _ } => {}
+            MyNoSqlTcpContract::SetNamespace { namespace: _ } => {}
             MyNoSqlTcpContract::InitTable { table_name, data } => {
                 if let Some(update_event) = self.subscribers.get(table_name.as_str()) {
                     update_event.as_ref().init_table(data);

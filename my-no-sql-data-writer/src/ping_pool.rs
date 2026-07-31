@@ -132,9 +132,25 @@ async fn ping_loop() {
         for itm in snapshot {
             let mut url_to_ping = HashMap::new();
             for table_item in itm.table_settings.iter() {
-                let url = table_item.settings.get_url().await;
+                let connection_string = table_item.settings.get_url().await;
+
+                // Ping is grouped by the endpoint it is sent to - and the namespace is a part
+                // of that endpoint identity, since the request carries it as a header.
+                let connection_string =
+                    match my_no_sql_abstractions::parse_connection_string(connection_string.as_str())
+                    {
+                        Ok(result) => result,
+                        Err(err) => {
+                            println!(
+                                "{}:{} ping error: invalid connection string. {}",
+                                itm.name, itm.version, err
+                            );
+                            continue;
+                        }
+                    };
+
                 let entry = url_to_ping
-                    .entry(url)
+                    .entry((connection_string.host, connection_string.namespace))
                     .or_insert_with(|| (table_item.settings.clone(), Vec::new(), false));
                 entry.1.push(table_item.table.to_string());
                 // The endpoint either speaks h2 or it does not - if any writer of it

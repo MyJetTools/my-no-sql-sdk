@@ -1,3 +1,6 @@
+mod db_namespace_name;
+pub use db_namespace_name::*;
+
 mod db_table;
 pub use db_table::*;
 

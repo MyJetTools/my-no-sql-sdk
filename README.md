@@ -106,6 +106,45 @@ which fixes that case's partition key (and optionally row key). Working example:
 
 ---
 
+## Namespaces
+
+Every table and every row lives inside a namespace. When none is configured it is the `default`
+namespace — exactly what every existing service does today.
+
+The namespace is a part of the connection string, and the format is the same for the writer
+(`MyNoSqlWriterSettings::get_url`) and for the reader (`MyNoSqlTcpConnectionSettings::get_host_port`).
+Both traits stay as they are — only the value in your `settings.yaml` changes:
+
+```yaml
+# legacy — the whole string is the host, namespace is `default`
+MyNoSqlWriterUrl: http://10.0.0.1:5123
+
+# new format — `;` separated `key=value` pairs, starts with `host=`
+MyNoSqlWriterUrl: host=http://10.0.0.1:5123;ns=alpha
+MyNoSqlReaderUrl: host=10.0.0.1:5125;ns=alpha
+```
+
+Rules:
+
+* a string starting with `host=` is the new format, anything else is the legacy host as it always was;
+* keys are case-insensitive, spaces around `;` and `=` are trimmed, `host` is mandatory, `ns` is optional;
+* an unknown key is an error — better not to start than to silently read the wrong namespace;
+* a namespace name follows the table-name rules (`[a-z0-9-]` only, no leading/trailing `-`, no `--`),
+  1–63 symbols. Upper case is an error and is never silently lower-cased: namespaces are auto-created
+  by the server, so a typo has to fail instead of bringing a garbage namespace to life;
+* the `default` namespace is never transmitted — the writer sends no `ns` header and the reader sends
+  no `SetNamespace` packet, so servers which know nothing about namespaces are not affected at all.
+
+A non-default namespace does require a server which supports them: the writer sends it as the `ns`
+header of every request, and the reader sends the `SetNamespace` TCP packet right after the `Greeting`
+and before the first `Subscribe`. An old server breaks the connection on that packet instead of
+silently serving the default namespace.
+
+Helpers are re-exported at the root of `my-no-sql-sdk`: `DEFAULT_NAMESPACE`, `DbNamespaceName`,
+`validate_namespace_name`, `parse_connection_string` / `ConnectionString`.
+
+---
+
 ## Writing data
 
 Implement the settings trait (usually on your `SettingsReader`):

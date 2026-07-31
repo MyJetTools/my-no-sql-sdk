@@ -10,6 +10,14 @@ pub extern crate rust_extensions as rust_extensions;
 
 pub extern crate my_no_sql_abstractions as abstractions;
 
+// Namespace primitives are shared between the SDK and the server - the server takes them
+// from here.
+pub use my_no_sql_abstractions::{
+    parse_connection_string, validate_namespace_name, ConnectionString, ConnectionStringError,
+    ValidationError, DEFAULT_NAMESPACE,
+};
+pub use my_no_sql_core::db::DbNamespaceName;
+
 #[cfg(feature = "data-reader")]
 pub extern crate my_no_sql_tcp_reader as reader;
 

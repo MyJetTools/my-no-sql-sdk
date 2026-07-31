@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use flurl::FlUrl;
 
+use my_no_sql_abstractions::{parse_connection_string, ConnectionString};
 use rust_extensions::UnsafeValue;
 
 use super::{CreateTableParams, DataWriterError, MyNoSqlWriterSettings};
@@ -50,13 +51,22 @@ impl FlUrlFactory {
         &self.settings
     }
 
-    async fn create_fl_url(&self, url: &str) -> FlUrl {
+    /// The only place where FlUrl is created - so every outgoing request carries both the
+    /// session and the namespace of this writer. `connection_string` is the parsed one: its
+    /// host is a clean url, never the whole `host=...;ns=...` string.
+    async fn create_fl_url(&self, connection_string: &ConnectionString) -> FlUrl {
         // Replay this process's session id on every request so the server can
         // attribute all of our traffic (data requests and the Ping handshake
         // alike) to a single writer.
-        let fl_url = flurl::FlUrl::new(url)
+        let mut fl_url = flurl::FlUrl::new(connection_string.host.as_str())
             .update_mode(self.mode)
             .with_header("session", super::get_writer_session_id());
+
+        // Nothing is sent when the connection works with the default namespace - which is what
+        // the server uses anyway when the header is absent.
+        if let Some(namespace) = connection_string.get_namespace_to_send() {
+            fl_url = fl_url.with_header("ns", namespace);
+        }
 
         #[cfg(all(unix, feature = "with-ssh"))]
         if let Some(ssh_security_credentials_resolver) = &self.ssh_security_credentials_resolver {
@@ -68,30 +78,31 @@ impl FlUrlFactory {
     }
 
     pub async fn get_fl_url(&self) -> Result<(FlUrl, String), DataWriterError> {
-        let url = self.settings.get_url().await;
+        let connection_string = parse_connection_string(self.settings.get_url().await.as_str())?;
+
         if !self.create_table_is_called.get_value() {
             if let Some(crate_table_params) = &self.auto_create_table_params {
-                self.create_table_if_not_exists(url.as_str(), crate_table_params)
+                self.create_table_if_not_exists(&connection_string, crate_table_params)
                     .await?;
             }
 
             self.create_table_is_called.set_value(true);
         }
 
-        let result = self.create_fl_url(url.as_str()).await;
+        let result = self.create_fl_url(&connection_string).await;
 
-        Ok((result, url))
+        Ok((result, connection_string.host))
     }
 
     pub async fn create_table_if_not_exists(
         &self,
-        url: &str,
+        connection_string: &ConnectionString,
         create_table_params: &CreateTableParams,
     ) -> Result<(), DataWriterError> {
-        let fl_url = self.create_fl_url(url).await;
+        let fl_url = self.create_fl_url(connection_string).await;
         super::execution::create_table_if_not_exists(
             fl_url,
-            url,
+            connection_string.host.as_str(),
             self.table_name,
             create_table_params,
             my_no_sql_abstractions::DataSynchronizationPeriod::Sec1,
