@@ -72,8 +72,9 @@ impl DbRowPlain {
         #[cfg(feature = "master-node")]
         let time_stamp = db_json_entity.time_stamp.unwrap();
         #[cfg(feature = "master-node")]
-        let time_stamp_value = DateTimeAsMicroseconds::from_str(time_stamp.value.get_str_value(&raw))
-            .unwrap_or_else(DateTimeAsMicroseconds::now);
+        let time_stamp_value =
+            my_no_sql_abstractions::parse_time_stamp(time_stamp.value.get_str_value(&raw))
+                .unwrap_or_else(DateTimeAsMicroseconds::now);
 
         Self {
             raw,

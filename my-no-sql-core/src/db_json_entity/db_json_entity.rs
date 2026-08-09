@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(db_row.get_partition_key(), "Pk");
         assert_eq!(db_row.get_row_key(), "Rk");
 
-        // The injected raw must carry the entity's own timestamp.
+        // The injected raw must carry the entity's own timestamp, in canonical form.
         let reparsed = DbJsonEntity::new(db_row.get_src_as_slice().into()).unwrap();
         assert_eq!(
             reparsed.get_time_stamp(db_row.get_src_as_slice()).unwrap(),
@@ -737,6 +737,46 @@ mod tests {
             reparsed.get_time_stamp(db_row.get_src_as_slice()).unwrap(),
             "2020-05-06T07:08:09"
         );
+    }
+
+    /// The client's version is what `InsertOrReplaceIfNew` compares, so the injected
+    /// value has to keep every microsecond of it - it used to be cut to 4 digits.
+    #[test]
+    fn keep_date_time_preserves_microseconds() {
+        for (src, expected) in [
+            ("2020-05-06T07:08:09.540412", "2020-05-06T07:08:09.540412"),
+            ("2020-05-06T07:08:09.999999", "2020-05-06T07:08:09.999999"),
+            ("2020-05-06T07:08:09.540400", "2020-05-06T07:08:09.5404"),
+            ("2020-05-06T07:08:09.5404", "2020-05-06T07:08:09.5404"),
+            ("2020-05-06T07:08:09.540412Z", "2020-05-06T07:08:09.540412"),
+        ] {
+            let json = format!(
+                r#"{{"PartitionKey":"Pk","RowKey":"Rk","TimeStamp":"{}"}}"#,
+                src
+            );
+
+            let db_row =
+                DbJsonEntity::parse_into_db_row_and_keep_date_time(json.as_bytes().into()).unwrap();
+
+            let reparsed = DbJsonEntity::new(db_row.get_src_as_slice().into()).unwrap();
+
+            assert_eq!(
+                expected,
+                reparsed.get_time_stamp(db_row.get_src_as_slice()).unwrap(),
+                "source: {}",
+                src
+            );
+
+            #[cfg(feature = "master-node")]
+            assert_eq!(
+                DateTimeAsMicroseconds::from_str(src)
+                    .unwrap()
+                    .unix_microseconds,
+                db_row.get_time_stamp_as_date_time().unix_microseconds,
+                "source: {}",
+                src
+            );
+        }
     }
 
     #[test]
