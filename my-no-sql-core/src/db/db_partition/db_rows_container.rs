@@ -69,17 +69,19 @@ impl DbRowsContainer {
 
     pub fn insert(&mut self, db_row: Arc<DbRow>) -> Option<Arc<DbRow>> {
         #[cfg(feature = "master-node")]
-        let added = self.rows_with_expiration_index.add(&db_row);
+        let inserted_db_row = db_row.clone();
 
         let (_, removed_db_row) = self.data.insert_or_replace(db_row);
 
+        // The replaced row has to leave the index before the new one enters it: when both share
+        // the expiration moment they share an index entry, and removing afterwards would drop it.
         #[cfg(feature = "master-node")]
-        if let Some(added) = added {
-            if added {
-                if let Some(removed_db_row) = &removed_db_row {
-                    self.rows_with_expiration_index.remove(removed_db_row);
-                }
+        {
+            if let Some(removed_db_row) = &removed_db_row {
+                self.rows_with_expiration_index.remove(removed_db_row);
             }
+
+            self.rows_with_expiration_index.add(&inserted_db_row);
         }
 
         removed_db_row
@@ -546,6 +548,56 @@ mod expiration_tests {
         db_rows.rows_with_expiration_index.assert_len(1);
 
         db_rows.remove("my-id");
+
+        db_rows.rows_with_expiration_index.assert_len(0);
+    }
+
+    fn insert_row(db_rows: &mut DbRowsContainer, row_key: &str, expires: &str) {
+        let row = format!(
+            r#"{{"PartitionKey":"client","RowKey":"{}","Expires":"{}"}}"#,
+            row_key, expires
+        );
+
+        let db_row = DbJsonEntity::parse_into_db_row(row.as_bytes().into(), &JsonTimeStamp::now())
+            .unwrap();
+
+        db_rows.insert(Arc::new(db_row));
+    }
+
+    /// A batch written in one go (as the trading-metrics-cache refresh timer does) shares a single
+    /// expiration moment, so every row of it lands in the same expiration index entry.
+    #[test]
+    fn rows_sharing_one_expiration_moment_are_counted_and_reindexed_per_row() {
+        const ROW_KEYS: [&str; 3] = ["a", "b", "c"];
+        const FIRST_EXPIRES: &str = "2030-01-01T00:00:00";
+        const SECOND_EXPIRES: &str = "2030-01-01T00:01:00";
+        const BETWEEN_EXPIRES: &str = "2030-01-01T00:00:30";
+
+        let mut db_rows = DbRowsContainer::new();
+
+        for row_key in ROW_KEYS {
+            insert_row(&mut db_rows, row_key, FIRST_EXPIRES);
+        }
+
+        db_rows.rows_with_expiration_index.assert_len(ROW_KEYS.len());
+
+        for row_key in ROW_KEYS {
+            insert_row(&mut db_rows, row_key, SECOND_EXPIRES);
+        }
+
+        db_rows.rows_with_expiration_index.assert_len(ROW_KEYS.len());
+
+        assert_eq!(
+            0,
+            db_rows
+                .get_rows_to_expire(DateTimeAsMicroseconds::from_str(BETWEEN_EXPIRES).unwrap())
+                .len(),
+            "rows re-written with a later Expires must not be left indexed at the old moment"
+        );
+
+        for row_key in ROW_KEYS {
+            db_rows.remove(row_key);
+        }
 
         db_rows.rows_with_expiration_index.assert_len(0);
     }

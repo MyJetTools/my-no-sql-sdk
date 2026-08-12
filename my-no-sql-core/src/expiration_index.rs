@@ -21,9 +21,11 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexItem<TOwned
         }
     }
 
-    pub fn remove(&mut self, key_as_str: &str) -> bool {
+    /// Returns (whether the item was in here, whether no items are left).
+    pub fn remove(&mut self, key_as_str: &str) -> (bool, bool) {
+        let amount_before = self.items.len();
         self.items.retain(|f| f.get_id_as_str() != key_as_str);
-        self.items.is_empty()
+        (self.items.len() < amount_before, self.items.is_empty())
     }
 }
 
@@ -66,8 +68,8 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
                 {
                     false
                 } else {
-                    self.index[index].items.push(item.to_owned());
-                    false
+                    items.push(item.to_owned());
+                    true
                 }
             }
             Err(index) => {
@@ -112,10 +114,14 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
     fn do_remove(&mut self, expiration_moment: DateTimeAsMicroseconds, key_as_str: &str) {
         match self.find_index(expiration_moment) {
             Ok(index) => {
+                let mut removed = false;
                 let mut remove_index = None;
 
                 if let Some(items) = self.index.get_mut(index) {
-                    if items.remove(key_as_str) {
+                    let (item_removed, no_items_left) = items.remove(key_as_str);
+                    removed = item_removed;
+
+                    if no_items_left {
                         remove_index = Some(index);
                     }
                 }
@@ -124,7 +130,9 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
                     self.index.remove(remove_index);
                 }
 
-                self.amount -= 1;
+                if removed {
+                    self.amount -= 1;
+                }
             }
             Err(_) => {
                 #[cfg(not(test))]
@@ -174,6 +182,7 @@ impl<TOwnedType: Clone + ExpirationIndex<TOwnedType>> ExpirationIndexContainer<T
 
     pub fn clear(&mut self) {
         self.index.clear();
+        self.amount = 0;
     }
 
     #[cfg(test)]
