@@ -1,5 +1,7 @@
+mod delete_if;
 mod error;
 mod my_no_sql_data_writer;
+pub use delete_if::*;
 mod settings;
 mod update_read_statistics;
 pub use error::DataWriterError;

@@ -2,11 +2,16 @@ use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 
 use flurl::FlUrl;
 
-use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer};
+use my_no_sql_abstractions::{
+    DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer, Timestamp,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{MyNoSqlDataWriterBuilder, MyNoSqlDataWriterWithRetries, MyNoSqlWriterSettings};
+use crate::{
+    BulkDeleteIfResult, MyNoSqlDataWriterBuilder, MyNoSqlDataWriterWithRetries,
+    MyNoSqlWriterSettings, RowToDeleteIf,
+};
 
 use super::{fl_url_factory::FlUrlFactory, DataWriterError, UpdateReadStatistics};
 
@@ -226,6 +231,40 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         super::execution::bulk_delete::<TEntity>(fl_url, rows_to_delete, &self.sync_period).await
     }
 
+    /// Conditional bulk delete: each row is deleted only while the `TimeStamp` stored in the
+    /// table is still the one the entity carries. Pass the entities exactly as they were
+    /// read.
+    ///
+    /// This always succeeds as a **partial** result: the matching rows are gone, and every
+    /// row which was left in place is listed in [`BulkDeleteIfResult::skipped`] with the
+    /// reason — [`TimeStampMismatch`](crate::DeleteIfSkipReason::TimeStampMismatch)
+    /// (rewritten meanwhile) or [`NotFound`](crate::DeleteIfSkipReason::NotFound) (no such
+    /// row). Use
+    /// [`BulkDeleteIfResult::is_all_deleted`] / [`BulkDeleteIfResult::conflicts`] instead of
+    /// picking the list apart by hand.
+    ///
+    /// Every entity must carry a real (non-default) `time_stamp` — an unreadable version can
+    /// never match a stored one, so the server rejects the **whole batch** with HTTP 400
+    /// rather than reporting that row as skipped. An empty slice is a no-op.
+    pub async fn bulk_delete_if(
+        &self,
+        entities: &[&TEntity],
+    ) -> Result<BulkDeleteIfResult, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::bulk_delete_if(fl_url, entities, &self.sync_period).await
+    }
+
+    /// [`Self::bulk_delete_if`] taking keys and versions on their own instead of whole
+    /// entities — for when the versions come from somewhere else than the entities
+    /// themselves. Same contract in every other respect.
+    pub async fn bulk_delete_if_rows(
+        &self,
+        rows: &[RowToDeleteIf],
+    ) -> Result<BulkDeleteIfResult, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::bulk_delete_if_rows::<TEntity>(fl_url, rows, &self.sync_period).await
+    }
+
     pub async fn get_entity(
         &self,
         partition_key: &str,
@@ -343,6 +382,47 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
     ) -> Result<Option<TEntity>, DataWriterError> {
         let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
         super::execution::delete_row(fl_url, partition_key, row_key).await
+    }
+
+    /// Optimistic-concurrency delete of the row this entity stands for: it is deleted only
+    /// while the stored `TimeStamp` is still the one the entity carries. This is the main
+    /// conditional-delete case — read the row, decide it should go, and delete exactly the
+    /// version that was read.
+    ///
+    /// `Ok(Some(deleted))` when it was deleted, `Ok(None)` when there was no such row (404).
+    /// A row which was rewritten in the meantime is **not** deleted and comes back as
+    /// [`DataWriterError::RecordIsChanged`] (409) — re-read it and decide again, since it may
+    /// no longer be a row you want to delete. A missing `time_stamp` is an HTTP 400.
+    pub async fn delete_entity_if(
+        &self,
+        entity: &TEntity,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        self.delete_row_if(
+            entity.get_partition_key(),
+            entity.get_row_key(),
+            entity.get_time_stamp(),
+        )
+        .await
+    }
+
+    /// [`Self::delete_entity_if`] addressed by keys instead of by entity — for when the
+    /// version comes from somewhere else than the entity itself. Same codes: `Ok(None)` on
+    /// 404, [`DataWriterError::RecordIsChanged`] on 409.
+    pub async fn delete_row_if(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        time_stamp: Timestamp,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        super::execution::delete_row_if(
+            fl_url,
+            partition_key,
+            row_key,
+            time_stamp,
+            &self.sync_period,
+        )
+        .await
     }
 
     pub async fn delete_partitions(&self, partition_keys: &[&str]) -> Result<(), DataWriterError> {

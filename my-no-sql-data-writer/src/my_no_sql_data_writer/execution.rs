@@ -4,12 +4,18 @@ use my_json::{
     json_writer::{JsonArrayWriter, RawJsonObject},
 };
 use my_logger::LogEventCtx;
-use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer};
+use my_no_sql_abstractions::{
+    DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer, Timestamp,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::{CreateTableParams, DataWriterError, OperationFailHttpContract, UpdateReadStatistics};
 
+use super::delete_if::{
+    deserialize_bulk_delete_if_result, serialize_rows_to_delete_if, BulkDeleteIfResult,
+    RowToDeleteIf,
+};
 use super::fl_url_ext::FlUrlExt;
 
 const API_SEGMENT: &str = "api";
@@ -254,6 +260,100 @@ pub async fn bulk_delete<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync
     let reason = response.receive_body().await?;
     let reason = String::from_utf8(reason)?;
     return Err(DataWriterError::Error(reason));
+}
+
+/// POST /api/Bulk/DeleteIf — optimistic-concurrency delete of a whole batch. Each entity's
+/// own `TimeStamp` is the version to match, so pass the entities exactly as they were read.
+///
+/// The answer is always a **partial success** (HTTP 200): rows which are still at the
+/// version sent are deleted, every other one stays in the table and comes back in
+/// [`BulkDeleteIfResult::skipped`] with the reason - `TimeStampMismatch` (rewritten
+/// meanwhile) or `NotFound` (no such row). A conflict here is data, not an error - unlike
+/// [`delete_row_if`], which answers 409 for the single row it addresses.
+///
+/// Every entity must carry a real (non-default) `TimeStamp`: an unreadable version could
+/// never match a stored one, so the server refuses the **whole batch** with HTTP 400 instead
+/// of reporting that row as skipped. An empty slice is a no-op (no request at all), like
+/// [`bulk_delete`].
+pub async fn bulk_delete_if<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
+    flurl: FlUrl,
+    entities: &[&TEntity],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<BulkDeleteIfResult, DataWriterError> {
+    if entities.is_empty() {
+        return Ok(BulkDeleteIfResult::nothing_to_delete());
+    }
+
+    debug_assert!(
+        entities.iter().all(|e| !e.get_time_stamp().is_default()),
+        "bulk_delete_if compares against the version each row was read at; a default \
+         Timestamp is not a version the server can read and it rejects the whole batch \
+         with HTTP 400"
+    );
+
+    let body = serialize_rows_to_delete_if(
+        entities
+            .iter()
+            .map(|e| (e.get_partition_key(), e.get_row_key(), e.get_time_stamp())),
+    )?;
+
+    send_bulk_delete_if::<TEntity>(flurl, body, sync_period).await
+}
+
+/// [`bulk_delete_if`] taking the keys and versions on their own instead of whole entities —
+/// for when the versions come from somewhere else than the entities (a projection, a change
+/// log, another service). Same contract in every other respect.
+pub async fn bulk_delete_if_rows<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
+    flurl: FlUrl,
+    rows: &[RowToDeleteIf],
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<BulkDeleteIfResult, DataWriterError> {
+    if rows.is_empty() {
+        return Ok(BulkDeleteIfResult::nothing_to_delete());
+    }
+
+    debug_assert!(
+        rows.iter().all(|row| !row.time_stamp.is_default()),
+        "bulk_delete_if_rows compares against the version each row was read at; a default \
+         Timestamp is not a version the server can read and it rejects the whole batch \
+         with HTTP 400"
+    );
+
+    let body = serialize_rows_to_delete_if(rows.iter().map(|row| {
+        (
+            row.partition_key.as_str(),
+            row.row_key.as_str(),
+            row.time_stamp,
+        )
+    }))?;
+
+    send_bulk_delete_if::<TEntity>(flurl, body, sync_period).await
+}
+
+async fn send_bulk_delete_if<TEntity: MyNoSqlEntity>(
+    flurl: FlUrl,
+    body: Vec<u8>,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<BulkDeleteIfResult, DataWriterError> {
+    let mut response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(BULK_CONTROLLER)
+        .append_path_segment("DeleteIf")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .post(HttpRequestBody::Json(body))
+        .await?;
+
+    // 400 - the table is not there, or a row of the batch carries no readable TimeStamp.
+    check_error(&mut response).await?;
+
+    if !is_ok_result(&response) {
+        let reason = response.receive_body().await?;
+        let reason = String::from_utf8(reason)?;
+        return Err(DataWriterError::Error(reason));
+    }
+
+    deserialize_bulk_delete_if_result(response.get_body_as_slice().await?)
 }
 
 pub async fn get_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
@@ -502,6 +602,58 @@ pub async fn delete_row<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync 
         return Ok(None);
     }
 
+    check_error(&mut response).await?;
+
+    if response.get_status_code() == 200 {
+        let entity = TEntity::deserialize_entity(response.get_body_as_slice().await?).unwrap();
+        return Ok(Some(entity));
+    }
+
+    return Ok(None);
+}
+
+/// DELETE /api/Row/DeleteIf — optimistic-concurrency delete: the row goes away only while
+/// the `TimeStamp` stored in the table is still `time_stamp`, and the deleted row comes back
+/// in the body.
+///
+/// Same codes as [`replace_entity`], mapped the way [`delete_row`] maps them: 200 → the row
+/// was deleted → `Ok(Some(entity))`; 404 → there is no such row → `Ok(None)`; 409 → the row
+/// is there but at another version, somebody rewrote it between the read and this call →
+/// [`DataWriterError::RecordIsChanged`]; 400 → the table is missing, or `time_stamp` is not
+/// a readable `TimeStamp`.
+///
+/// Use it as read → decide → delete exactly the version that was read. On a conflict re-read
+/// and decide again — the row may no longer be one you want to delete.
+pub async fn delete_row_if<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
+    flurl: FlUrl,
+    partition_key: &str,
+    row_key: &str,
+    time_stamp: Timestamp,
+    sync_period: &DataSynchronizationPeriod,
+) -> Result<Option<TEntity>, DataWriterError> {
+    debug_assert!(
+        !time_stamp.is_default(),
+        "DeleteIf matches against the version the row was read at; a default Timestamp is \
+         not a version the server can read and it answers HTTP 400"
+    );
+
+    let mut response = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(ROW_CONTROLLER)
+        .append_path_segment("DeleteIf")
+        .append_data_sync_period(sync_period)
+        .with_table_name_as_query_param(TEntity::TABLE_NAME)
+        .with_partition_key_as_query_param(partition_key)
+        .with_row_key_as_query_param(row_key)
+        .append_query_param("timeStamp", Some(time_stamp.to_string()))
+        .delete()
+        .await?;
+
+    if response.get_status_code() == 404 {
+        return Ok(None);
+    }
+
+    // Handles 400 (deserialize_error) and 409 (RecordIsChanged).
     check_error(&mut response).await?;
 
     if response.get_status_code() == 200 {
@@ -1311,6 +1463,33 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "empty bulk must be a no-op Ok(()), got {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn empty_bulk_delete_if_is_ok() {
+        // Same empty-input guard as bulk_delete: the answer is built without a request, so
+        // no server is needed.
+        let result = super::bulk_delete_if::<TimeStampedTestEntity>(
+            flurl::FlUrl::new("http://127.0.0.1:0"),
+            &[],
+            &my_no_sql_abstractions::DataSynchronizationPeriod::Immediately,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert!(result.is_all_deleted());
+
+        let result = super::bulk_delete_if_rows::<TimeStampedTestEntity>(
+            flurl::FlUrl::new("http://127.0.0.1:0"),
+            &[],
+            &my_no_sql_abstractions::DataSynchronizationPeriod::Immediately,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.deleted, 0);
+        assert!(result.is_all_deleted());
     }
 
     #[test]
