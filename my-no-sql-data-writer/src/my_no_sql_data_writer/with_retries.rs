@@ -1,8 +1,10 @@
 use std::{collections::BTreeMap, marker::PhantomData};
 
-use my_no_sql_abstractions::{DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer};
+use my_no_sql_abstractions::{
+    DataSynchronizationPeriod, MyNoSqlEntity, MyNoSqlEntitySerializer, Timestamp,
+};
 
-use crate::{DataWriterError, UpdateReadStatistics};
+use crate::{BulkDeleteIfResult, DataWriterError, RowToDeleteIf, UpdateReadStatistics};
 
 use super::fl_url_factory::FlUrlFactory;
 
@@ -152,6 +154,34 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         super::execution::bulk_delete::<TEntity>(fl_url, rows_to_delete, &self.sync_period).await
     }
 
+    /// Conditional bulk delete — each row is deleted only while it is still at the version
+    /// its entity carries. See [`super::MyNoSqlDataWriter::bulk_delete_if`]: the result is a
+    /// partial success, the leftovers come back in [`BulkDeleteIfResult::skipped`]. Every
+    /// entity must carry a real (non-default) `time_stamp`; an empty slice is a no-op.
+    ///
+    /// The `with_retries` here retries the underlying HTTP request on transport errors, which
+    /// is safe: a retry re-sends the same versions, and a row deleted by the first attempt
+    /// simply comes back as `NotFound` in the second one.
+    pub async fn bulk_delete_if(
+        &self,
+        entities: &[&TEntity],
+    ) -> Result<BulkDeleteIfResult, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::bulk_delete_if(fl_url, entities, &self.sync_period).await
+    }
+
+    /// [`Self::bulk_delete_if`] taking keys and versions on their own instead of whole
+    /// entities. See [`super::MyNoSqlDataWriter::bulk_delete_if_rows`].
+    pub async fn bulk_delete_if_rows(
+        &self,
+        rows: &[RowToDeleteIf],
+    ) -> Result<BulkDeleteIfResult, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::bulk_delete_if_rows::<TEntity>(fl_url, rows, &self.sync_period).await
+    }
+
     pub async fn get_entity(
         &self,
         partition_key: &str,
@@ -268,6 +298,42 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
         let fl_url = fl_url.with_retries(self.max_attempts);
         super::execution::delete_row(fl_url, partition_key, row_key).await
+    }
+
+    /// Optimistic-concurrency delete of the row this entity stands for. See
+    /// [`super::MyNoSqlDataWriter::delete_entity_if`]. The `with_retries` here retries the
+    /// underlying HTTP request on transport errors; a 409 `RecordIsChanged` is a real
+    /// conflict and is returned to the caller.
+    pub async fn delete_entity_if(
+        &self,
+        entity: &TEntity,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        self.delete_row_if(
+            entity.get_partition_key(),
+            entity.get_row_key(),
+            entity.get_time_stamp(),
+        )
+        .await
+    }
+
+    /// [`Self::delete_entity_if`] addressed by keys instead of by entity. See
+    /// [`super::MyNoSqlDataWriter::delete_row_if`].
+    pub async fn delete_row_if(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        time_stamp: Timestamp,
+    ) -> Result<Option<TEntity>, DataWriterError> {
+        let (fl_url, _) = self.fl_url_factory.get_fl_url().await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::delete_row_if(
+            fl_url,
+            partition_key,
+            row_key,
+            time_stamp,
+            &self.sync_period,
+        )
+        .await
     }
 
     pub async fn delete_partitions(&self, partition_keys: &[&str]) -> Result<(), DataWriterError> {

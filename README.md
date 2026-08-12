@@ -194,6 +194,9 @@ rows_to_delete.insert("instruments".to_string(), vec!["EURUSD".to_string()]);
 w.bulk_delete(&rows_to_delete).await?;
 ```
 
+These deletes are unconditional. To delete only a row which has not changed since you read
+it, see [Optimistic-concurrency delete](#optimistic-concurrency-delete-delete_entity_if--bulk_delete_if).
+
 The writer returns **owned** entities (`Result<Option<T>, DataWriterError>`), unlike the reader which hands out `Arc<T>`.
 
 ### Insert-or-replace-if-new (client-versioned writes)
@@ -283,6 +286,62 @@ w.update_entity_with_max_attempts("instruments", "EURUSD", 10, |e| e.digits += 1
 The closure must not overwrite `time_stamp` — on every retry the version comes from the fresh read, and `get_entity` deserializes it back (`#[serde(rename = "TimeStamp")]`). Errors: **409** → `DataWriterError::RecordIsChanged` (surfaced only after the attempts are exhausted), **404** → `DataWriterError::RecordNotFound`, missing `TimeStamp` → **400**.
 
 The low-level `replace_entity(&entity)` is also available (both on the writer and `with_retries`) when you want to drive the loop yourself — the entity must carry the `TimeStamp` it was read with.
+
+### Optimistic-concurrency delete (`delete_entity_if` / `bulk_delete_if`)
+
+The same *read version → act on that version* rule applied to deletes: a row is removed **only while its stored `TimeStamp` is still the one you read**. Use it whenever the decision to delete was made from data you read — a row somebody rewrote in the meantime is a row you have not seen, and deleting it blindly would throw that write away.
+
+For a single row the version mismatch is an **error**, exactly like `replace_entity`:
+
+```rust
+// The main case: read it, decide it should go, delete exactly that version.
+let entity = w.get_entity("instruments", "EURUSD", None).await?.unwrap();
+
+match w.delete_entity_if(&entity).await {
+    Ok(Some(deleted)) => { /* gone — `deleted` is the row as it was */ }
+    Ok(None) => { /* 404: there was no such row */ }
+    Err(DataWriterError::RecordIsChanged(_)) => {
+        // 409: rewritten since the read. Re-read and decide again — it may no longer be
+        // a row you want to delete.
+    }
+    Err(err) => return Err(err),
+}
+
+// Same thing addressed by keys, when the version comes from somewhere else than the entity:
+w.delete_row_if("instruments", "EURUSD", time_stamp).await?;
+```
+
+For a batch a mismatch is **data, not an error**: `bulk_delete_if` always answers `200` and reports which rows it left alone. The matching rows are deleted regardless.
+
+```rust
+// Versions come from the entities themselves — pass them exactly as they were read.
+let result = w.bulk_delete_if(&[&first, &second]).await?;
+
+if !result.is_all_deleted() {
+    println!("deleted {}, left {} in place", result.deleted, result.skipped.len());
+
+    for row in result.conflicts() {      // rewritten meanwhile — worth re-reading
+        println!("conflict: {}/{}", row.partition_key, row.row_key);
+    }
+    for row in result.not_found() {      // already gone — nothing to do
+        println!("already gone: {}/{}", row.partition_key, row.row_key);
+    }
+}
+
+// Or with the keys and versions on their own:
+let rows = vec![RowToDeleteIf::new("instruments", "EURUSD", time_stamp)];
+let result = w.bulk_delete_if_rows(&rows).await?;
+```
+
+`SkippedRow::reason` is a `DeleteIfSkipReason` — `NotFound`, `TimeStampMismatch`, or `Unknown(String)` for a reason a newer server may add, so an old client never fails to parse a new response. All four methods are on the writer and on `with_retries`.
+
+The `TimeStamp` is **mandatory** here, like in the `*_if_new` family: an unreadable version can never match a stored one, so a default one comes back as **HTTP 400** — and for `bulk_delete_if` it fails the **whole batch** rather than being reported as one skipped row. An empty batch is a no-op (no request at all).
+
+| Method | Version mismatch | Row missing |
+|---|---|---|
+| `delete_row` / `bulk_delete` | n/a — deletes unconditionally | `Ok(None)` / ignored |
+| `delete_entity_if` / `delete_row_if` | `DataWriterError::RecordIsChanged` (409) | `Ok(None)` (404) |
+| `bulk_delete_if` / `bulk_delete_if_rows` | `skipped` + `TimeStampMismatch` (200) | `skipped` + `NotFound` (200) |
 
 ### HTTP/2
 

@@ -241,18 +241,16 @@ mod tests {
     fn request_body_is_a_flat_array_of_pk_rk_and_time_stamp() {
         let ts = time_stamp("2026-08-12T18:19:36.776352");
 
-        let body = serialize_rows_to_delete_if(
-            [("pk1", "rk1", ts), ("pk1", "rk2", ts)]
-                .into_iter()
-                .map(|(pk, rk, ts)| (pk, rk, ts)),
-        )
-        .unwrap();
+        let body =
+            serialize_rows_to_delete_if([("pk1", "rk1", ts), ("pk1", "rk2", ts)].into_iter())
+                .unwrap();
 
-        assert_eq!(
-            std::str::from_utf8(&body).unwrap(),
-            r#"[{"PartitionKey":"pk1","RowKey":"rk1","TimeStamp":"2026-08-12T18:19:36.776352"},"#.to_string()
-                + r#"{"PartitionKey":"pk1","RowKey":"rk2","TimeStamp":"2026-08-12T18:19:36.776352"}]"#
+        let expected = concat!(
+            r#"[{"PartitionKey":"pk1","RowKey":"rk1","TimeStamp":"2026-08-12T18:19:36.776352"},"#,
+            r#"{"PartitionKey":"pk1","RowKey":"rk2","TimeStamp":"2026-08-12T18:19:36.776352"}]"#
         );
+
+        assert_eq!(std::str::from_utf8(&body).unwrap(), expected);
     }
 
     /// A version spelled with trailing zeros is the same moment; it goes out in the
