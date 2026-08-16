@@ -165,8 +165,10 @@ fn get_deserialize_cases(enum_cases: &[EnumCase]) -> Result<proc_macro2::TokenSt
     result.push(quote::quote! {
         let entity = my_no_sql_sdk::core::db_json_entity::DbJsonEntity::from_slice(src).unwrap();
 
-        let entity_partition_key = entity.get_partition_key(src);
-        let entity_row_key = entity.get_row_key(src);
+        // Which case this is, is a question about the keys - answered against the payload
+        // as it lies, without building the keys as strings
+        let entity_partition_key = entity.partition_key_value(src);
+        let entity_row_key = entity.row_key_value(src);
     });
 
     for enum_case in enum_cases {
@@ -178,16 +180,16 @@ fn get_deserialize_cases(enum_cases: &[EnumCase]) -> Result<proc_macro2::TokenSt
                 result.push(quote::quote! {
 
                     if let Some(row_key) = #model_ident::ROW_KEY{
-                        if entity_partition_key == #model_ident::PARTITION_KEY && entity_row_key == row_key {
+                        if entity_partition_key.eq_with_str(#model_ident::PARTITION_KEY) && entity_row_key.eq_with_str(row_key) {
                             let item = #model_ident::deserialize_entity(src)?;
                             return Ok(Self::#enum_case_ident(item));
                         }
                     }else{
-                        if entity_partition_key == #model_ident::PARTITION_KEY {
+                        if entity_partition_key.eq_with_str(#model_ident::PARTITION_KEY) {
                             let item = #model_ident::deserialize_entity(src)?;
                             return Ok(Self::#enum_case_ident(item));
                         }
-    
+
                     }
                 });
             }

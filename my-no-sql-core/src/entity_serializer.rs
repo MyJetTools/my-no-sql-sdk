@@ -2,7 +2,7 @@ use my_json::json_reader::JsonFirstLineIterator;
 use my_no_sql_abstractions::MyNoSqlEntity;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::db_json_entity::DbJsonEntity;
+use crate::db_json_entity::{DbJsonEntity, JsonStrValue};
 
 pub fn serialize<TMyNoSqlEntity>(entity: &TMyNoSqlEntity) -> Vec<u8>
 where
@@ -59,22 +59,26 @@ pub fn inject_partition_key_and_row_key(
 
     let found_object_index = found_object_index.unwrap();
 
+    // The keys arrive as values and go into a payload, so they go in as raw json - the one
+    // direction, `read_as_raw`, the reader undoes with `read_as_value`.
+    let partition_key = JsonStrValue::Unescaped(partition_key);
+
     let to_insert = if let Some(row_key) = row_key {
         format!(
             "\"PartitionKey\":\"{}\",\"RowKey\":\"{}\",",
-            my_json::json_string_value::escape_json_string_value(partition_key).as_str(),
-            my_json::json_string_value::escape_json_string_value(row_key).as_str(),
+            partition_key.read_as_raw().as_str(),
+            JsonStrValue::Unescaped(row_key).read_as_raw().as_str(),
         )
         .into_bytes()
     } else {
         format!(
             "\"PartitionKey\":\"{}\",",
-            my_json::json_string_value::escape_json_string_value(partition_key).as_str(),
+            partition_key.read_as_raw().as_str(),
         )
         .into_bytes()
     };
 
-    let mut result = Vec::with_capacity(src.len() + partition_key.len());
+    let mut result = Vec::with_capacity(src.len() + to_insert.len());
 
     result.extend_from_slice(&src[..found_object_index + 1]);
 

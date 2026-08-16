@@ -3,6 +3,8 @@ mod db_json_entity;
 mod error;
 
 mod json_key_value_position;
+mod json_str_value;
+pub use json_str_value::JsonStrValue;
 mod json_time_stamp;
 
 pub use db_json_entity::*;

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::DbEntityParseFail;
 use super::DbJsonEntityWithContent;
+use super::JsonStrValue;
 use super::DbRowContentCompiler;
 use super::JsonKeyValuePosition;
 use super::JsonTimeStamp;
@@ -20,6 +21,15 @@ pub struct DbJsonEntity {
     pub time_stamp: Option<JsonKeyValuePosition>,
     pub expires: Option<JsonKeyValuePosition>,
     pub expires_value: Option<DateTimeAsMicroseconds>,
+    /// The logical PartitionKey - filled in only when the raw JSON carries escape sequences
+    /// (`"a\\b"`, `"д"`, ...) and the value between the quotes therefore is not the key
+    /// itself. `None` - the raw slice is the key and is borrowed as is.
+    ///
+    /// Resolved once, here, so that every consumer (this entity's accessors, [`DbRow`], the
+    /// readers' index) addresses a row by the same, logical, key.
+    pub(crate) partition_key_unescaped: Option<Box<str>>,
+    /// The logical RowKey - see [`Self::partition_key_unescaped`].
+    pub(crate) row_key_unescaped: Option<Box<str>>,
 }
 
 impl DbJsonEntity {
@@ -81,9 +91,16 @@ impl DbJsonEntity {
             return Err(DbEntityParseFail::FieldRowKeyIsRequired);
         }
 
+        let raw = json_first_line_reader.as_slice();
+
+        let partition_key = partition_key.unwrap();
+        let row_key = row_key.unwrap();
+
         let result = Self {
-            partition_key: partition_key.unwrap(),
-            row_key: row_key.unwrap(),
+            partition_key_unescaped: partition_key.value.unescape_str_value(raw),
+            row_key_unescaped: row_key.value.unescape_str_value(raw),
+            partition_key,
+            row_key,
             expires,
             time_stamp,
             expires_value,
@@ -157,10 +174,6 @@ impl DbJsonEntity {
 
         let partition_key = partition_key.unwrap();
 
-        if partition_key.key.len() > 255 {
-            return Err(DbEntityParseFail::PartitionKeyIsTooLong);
-        }
-
         if partition_key.value.is_null(content.as_slice()) {
             return Err(DbEntityParseFail::FieldPartitionKeyCanNotBeNull);
         }
@@ -175,7 +188,22 @@ impl DbJsonEntity {
             return Err(DbEntityParseFail::FieldRowKeyCanNotBeNull);
         }
 
+        let partition_key_unescaped = partition_key.value.unescape_str_value(content.as_slice());
+
+        // The limit is on the key, not on the json spelling of it: `д` is one character of
+        // a key and six of the payload.
+        let partition_key_len = match partition_key_unescaped.as_ref() {
+            Some(partition_key) => partition_key.len(),
+            None => partition_key.value.get_str_value(content.as_slice()).len(),
+        };
+
+        if partition_key_len > super::consts::MAX_PARTITION_KEY_LEN {
+            return Err(DbEntityParseFail::PartitionKeyIsTooLong);
+        }
+
         let db_json_entity = Self {
+            partition_key_unescaped,
+            row_key_unescaped: row_key.value.unescape_str_value(content.as_slice()),
             partition_key,
             row_key,
             expires,
@@ -258,12 +286,38 @@ impl DbJsonEntity {
         Ok(result)
     }
 
-    pub fn get_partition_key<'s>(&self, raw: &'s [u8]) -> &'s str {
-        self.partition_key.value.get_str_value(raw)
+    /// The logical PartitionKey - JSON escapes are already resolved, so this is the value a
+    /// point request (`?partitionKey=...`) addresses the row by.
+    pub fn get_partition_key<'s>(&'s self, raw: &'s [u8]) -> &'s str {
+        match self.partition_key_unescaped.as_ref() {
+            Some(partition_key) => partition_key,
+            None => self.partition_key.value.get_str_value(raw),
+        }
     }
 
-    pub fn get_row_key<'s>(&self, raw: &'s [u8]) -> &'s str {
-        self.row_key.value.get_str_value(raw)
+    /// The logical RowKey - see [`Self::get_partition_key`].
+    pub fn get_row_key<'s>(&'s self, raw: &'s [u8]) -> &'s str {
+        match self.row_key_unescaped.as_ref() {
+            Some(row_key) => row_key,
+            None => self.row_key.value.get_str_value(raw),
+        }
+    }
+
+    /// The PartitionKey as a [`JsonStrValue`] - for a caller which only needs to answer a
+    /// question about it (`eq_with_str` / `cmp_with_str`) and not to build it.
+    pub fn partition_key_value<'s>(&'s self, raw: &'s [u8]) -> JsonStrValue<'s> {
+        match self.partition_key_unescaped.as_ref() {
+            Some(partition_key) => JsonStrValue::Unescaped(partition_key),
+            None => self.partition_key.value.get_json_value(raw),
+        }
+    }
+
+    /// The RowKey as a [`JsonStrValue`] - see [`Self::partition_key_value`].
+    pub fn row_key_value<'s>(&'s self, raw: &'s [u8]) -> JsonStrValue<'s> {
+        match self.row_key_unescaped.as_ref() {
+            Some(row_key) => JsonStrValue::Unescaped(row_key),
+            None => self.row_key.value.get_json_value(raw),
+        }
     }
 
     pub fn get_expires<'s>(&self, raw: &'s [u8]) -> Option<&'s str> {
@@ -553,6 +607,51 @@ mod tests {
             "\"2022-03-17T13:28:29.6537478Z\"",
             std::str::from_utf8(expires_value).unwrap()
         );
+    }
+
+    fn parse_with_partition_key_of(
+        partition_key: &str,
+    ) -> Result<crate::db::DbRow, DbEntityParseFail> {
+        let json = format!(r#"{{"PartitionKey":"{}","RowKey":"Rk"}}"#, partition_key);
+
+        DbJsonEntity::parse_into_db_row(json.as_bytes().into(), &JsonTimeStamp::now())
+    }
+
+    fn assert_partition_key_is_too_long(partition_key: &str) {
+        match parse_with_partition_key_of(partition_key) {
+            Err(DbEntityParseFail::PartitionKeyIsTooLong) => {}
+            Err(err) => panic!("Expected PartitionKeyIsTooLong, got {:?}", err),
+            Ok(_) => panic!("Expected PartitionKeyIsTooLong, the row was accepted"),
+        }
+    }
+
+    #[test]
+    fn partition_key_at_the_limit_is_accepted() {
+        let partition_key = "p".repeat(super::super::consts::MAX_PARTITION_KEY_LEN);
+
+        let db_row = parse_with_partition_key_of(partition_key.as_str()).unwrap();
+
+        assert_eq!(db_row.get_partition_key(), partition_key);
+    }
+
+    #[test]
+    fn partition_key_over_the_limit_is_rejected() {
+        assert_partition_key_is_too_long(
+            "p".repeat(super::super::consts::MAX_PARTITION_KEY_LEN + 1)
+                .as_str(),
+        );
+    }
+
+    /// The limit counts the key, not its json spelling: `д` is six characters of payload
+    /// and two bytes of key.
+    #[test]
+    fn escaped_partition_key_is_measured_after_unescaping() {
+        // 300 characters of json, 100 bytes of key - accepted
+        let db_row = parse_with_partition_key_of("\\u0434".repeat(50).as_str()).unwrap();
+        assert_eq!(db_row.get_partition_key(), "д".repeat(50));
+
+        // ...and a key which really is too long stays rejected, however it is spelled
+        assert_partition_key_is_too_long("\\u0434".repeat(200).as_str());
     }
 
     #[test]

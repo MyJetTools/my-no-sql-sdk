@@ -1,5 +1,7 @@
 mod data_reader_entities_set;
 mod my_no_sql_tcp_connection;
+#[cfg(test)]
+mod test_escaped_keys;
 mod settings;
 mod subscribers;
 mod tcp_events;

@@ -1,4 +1,6 @@
 mod db_row;
+#[cfg(test)]
+mod test_escaped_keys;
 
 pub use db_row::*;
 mod row_key_parameter;

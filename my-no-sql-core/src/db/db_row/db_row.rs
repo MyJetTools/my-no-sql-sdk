@@ -46,6 +46,12 @@ fn zstd_decompress(compressed: &[u8], content_len: usize) -> Vec<u8> {
 pub struct DbRowPlain {
     partition_key: crate::db_json_entity::KeyValueContentPosition,
     row_key: crate::db_json_entity::KeyValueContentPosition,
+    /// The logical PartitionKey, kept next to `raw` only when the raw JSON carries escape
+    /// sequences and the slice between the quotes therefore is not the key itself. `None` -
+    /// nothing to unescape, the key is borrowed straight out of `raw`.
+    partition_key_unescaped: Option<Box<str>>,
+    /// The logical RowKey - see `partition_key_unescaped`.
+    row_key_unescaped: Option<Box<str>>,
     raw: Vec<u8>,
     #[cfg(feature = "master-node")]
     expires_value: AtomicDateTimeAsMicroseconds,
@@ -60,7 +66,7 @@ pub struct DbRowPlain {
 }
 
 impl DbRowPlain {
-    pub fn new(db_json_entity: DbJsonEntity, raw: Vec<u8>) -> Self {
+    pub fn new(mut db_json_entity: DbJsonEntity, raw: Vec<u8>) -> Self {
         #[cfg(feature = "debug_db_row")]
         println!(
             "Created DbRow: PK:{}. RK:{}. Expires{:?}",
@@ -68,6 +74,10 @@ impl DbRowPlain {
             db_json_entity.get_row_key(raw.as_slice()),
             db_json_entity.expires
         );
+
+        // The keys were unescaped once, while parsing - move them over instead of doing it again.
+        let partition_key_unescaped = db_json_entity.partition_key_unescaped.take();
+        let row_key_unescaped = db_json_entity.row_key_unescaped.take();
 
         #[cfg(feature = "master-node")]
         let time_stamp = db_json_entity.time_stamp.unwrap();
@@ -80,6 +90,8 @@ impl DbRowPlain {
             raw,
             partition_key: db_json_entity.partition_key.value,
             row_key: db_json_entity.row_key.value,
+            partition_key_unescaped,
+            row_key_unescaped,
             #[cfg(feature = "master-node")]
             time_stamp: time_stamp.value,
             #[cfg(feature = "master-node")]
@@ -98,11 +110,17 @@ impl DbRowPlain {
     }
 
     pub fn get_partition_key(&self) -> &str {
-        self.partition_key.get_str_value(&self.raw)
+        match self.partition_key_unescaped.as_ref() {
+            Some(partition_key) => partition_key,
+            None => self.partition_key.get_str_value(&self.raw),
+        }
     }
 
     pub fn get_row_key(&self) -> &str {
-        self.row_key.get_str_value(&self.raw)
+        match self.row_key_unescaped.as_ref() {
+            Some(row_key) => row_key,
+            None => self.row_key.get_str_value(&self.raw),
+        }
     }
 
     #[cfg(feature = "master-node")]
@@ -195,10 +213,19 @@ impl DbRowCompressed {
     }
 
     fn into_plain(&self) -> DbRowPlain {
+        let raw = self.decompress();
+
+        // Derived from the very same bytes the positions point into, so the plain row keeps
+        // addressing itself by the same logical keys the compressed one did.
+        let partition_key_unescaped = self.partition_key.unescape_str_value(raw.as_slice());
+        let row_key_unescaped = self.row_key.unescape_str_value(raw.as_slice());
+
         DbRowPlain {
-            raw: self.decompress(),
+            raw,
             partition_key: self.partition_key.clone(),
             row_key: self.row_key.clone(),
+            partition_key_unescaped,
+            row_key_unescaped,
             expires_value: AtomicDateTimeAsMicroseconds::new(
                 self.expires_value.as_date_time().unix_microseconds,
             ),
