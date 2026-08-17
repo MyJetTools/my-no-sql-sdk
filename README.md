@@ -232,6 +232,40 @@ writer.insert_or_replace_if_new_by_chunks_append(&pid, &next_chunk).await?;
 writer.insert_or_replace_if_new_by_chunks_commit(&pid).await?;   // or ..._cancel(&pid)
 ```
 
+### Atomic snapshot replace (`clean_*_and_bulk_insert`)
+
+The clean-and-insert family exists for exactly one job: **swap one snapshot of data for another
+transactionally**. `clean_table_and_bulk_insert` replaces the whole table,
+`clean_partition_and_bulk_insert` replaces a single partition and leaves the rest of the table
+alone.
+
+The clean and the insert are **one server-side operation**, and it reaches subscribers as a
+single `InitTable` / `InitPartition` packet which the reader applies under **one lock** — the
+old snapshot is swapped for the new one in a single step. **There is no window in which the
+table or the partition is observed empty or half-filled**: a concurrent read gets either the
+entire previous snapshot or the entire new one.
+
+```rust
+// Whole table: readers see the old set of instruments until the moment they see the new one.
+w.clean_table_and_bulk_insert(&entities).await?;
+
+// One partition — the rest of the table is untouched.
+w.clean_partition_and_bulk_insert("instruments", &entities).await?;
+```
+
+> ⚠️ **Do not emulate this** with `delete_partitions` + `bulk_insert_or_replace` (or
+> `bulk_delete` + bulk insert). Those are two independent operations and two separate reader
+> updates, so every reader spends the gap between them looking at an empty partition/table.
+> That gap is precisely what the clean-and-insert methods remove.
+
+Chunking does not weaken the guarantee: in
+`clean_and_bulk_insert_by_chunks_with_own_timestamp` (below) the uploaded chunks are invisible
+until the commit, and the commit performs the same single swap. A cancelled or failed process
+leaves the previous snapshot exactly as it was.
+
+An empty slice is still a full replace for the non-chunked methods — it cleans and inserts
+nothing. The chunked variant is a no-op on an empty slice instead (no process is started).
+
 ### Bulk replace keeping the client `TimeStamp`
 
 `bulk_insert_or_update_with_own_timestamp` is `bulk_insert_or_replace` with the server's `useTimestamp=true` flag: every row is written **unconditionally** (no "if new" check), but the stored row keeps the **client-supplied `TimeStamp`** instead of the server clock. Use it to replay a snapshot while preserving each row's original version. Like `*_if_new`, the `TimeStamp` is mandatory — a default one → **HTTP 400**; empty slice is a no-op. Available on the writer and `with_retries`.
@@ -241,7 +275,7 @@ writer.insert_or_replace_if_new_by_chunks_commit(&pid).await?;   // or ..._cance
 w.bulk_insert_or_update_with_own_timestamp(&entities).await?;
 ```
 
-The `useTimestamp=true` flag applies to the clean-and-insert family too — same mandatory-`TimeStamp` rule:
+The `useTimestamp=true` flag applies to the [clean-and-insert family](#atomic-snapshot-replace-clean__and_bulk_insert) too — same mandatory-`TimeStamp` rule, same transactional snapshot swap:
 
 ```rust
 // Clean the table (or one partition) and re-insert, keeping each row's own TimeStamp.
@@ -249,7 +283,8 @@ w.clean_table_and_bulk_insert_with_own_timestamp(&entities).await?;
 w.clean_partition_and_bulk_insert_with_own_timestamp("instruments", &entities).await?;
 
 // Chunked variant for large snapshots — starts a process, uploads the rest, commits so the
-// clean + insert are atomic; best-effort Cancel on any failure. Base writer only (not
+// clean + insert land as one swap (nothing is visible before the commit, and the table/
+// partition is never empty in between); best-effort Cancel on any failure. Base writer only (not
 // with_retries). `partition_key: None` cleans the whole table; `Some(pk)` only that partition.
 writer.clean_and_bulk_insert_by_chunks_with_own_timestamp(None, &entities, 1000).await?;
 // Or stream it:

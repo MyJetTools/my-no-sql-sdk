@@ -435,6 +435,15 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         super::execution::get_all(fl_url).await
     }
 
+    /// **Atomically replaces the whole table** with `entities` — this is the point of the
+    /// method, not a side effect. The clean and the insert are one server-side operation and
+    /// reach subscribers as a single `InitTable` packet, which the reader applies under one
+    /// lock (old snapshot swapped for the new one in a single step). **There is no moment at
+    /// which the table is observed empty or half-filled**: a concurrent read sees either the
+    /// entire previous snapshot or the entire new one.
+    ///
+    /// Do **not** emulate it with `delete_partitions` + `bulk_insert_or_replace` — that leaves
+    /// a window in which readers see an empty table.
     pub async fn clean_table_and_bulk_insert(
         &self,
         entities: &[TEntity],
@@ -443,6 +452,12 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         super::execution::clean_table_and_bulk_insert(fl_url, entities, &self.sync_period).await
     }
 
+    /// **Atomically replaces one partition** with `entities`, leaving the rest of the table
+    /// untouched. Same guarantee as [`Self::clean_table_and_bulk_insert`], scoped to
+    /// `partition_key`: it is one server-side operation, delivered as a single `InitPartition`
+    /// packet and applied by the reader under one lock, so **the partition is never observed
+    /// empty or half-filled** — a concurrent read gets the whole old snapshot or the whole new
+    /// one.
     pub async fn clean_partition_and_bulk_insert(
         &self,
         partition_key: &str,
@@ -458,10 +473,11 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         .await
     }
 
-    /// Same as [`Self::clean_table_and_bulk_insert`], but each re-inserted row keeps its
-    /// **own `TimeStamp`** (server sends `useTimestamp=true`) instead of the server clock.
-    /// Every entity must carry a real (non-default) `time_stamp`, otherwise the server
-    /// rejects the request with HTTP 400.
+    /// Same as [`Self::clean_table_and_bulk_insert`] — including the atomic snapshot swap
+    /// (one `InitTable` packet, applied under one reader lock, table never seen empty) — but
+    /// each re-inserted row keeps its **own `TimeStamp`** (server sends `useTimestamp=true`)
+    /// instead of the server clock. Every entity must carry a real (non-default)
+    /// `time_stamp`, otherwise the server rejects the request with HTTP 400.
     pub async fn clean_table_and_bulk_insert_with_own_timestamp(
         &self,
         entities: &[TEntity],
@@ -475,9 +491,11 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         .await
     }
 
-    /// Same as [`Self::clean_partition_and_bulk_insert`], but each re-inserted row keeps its
-    /// **own `TimeStamp`** (`useTimestamp=true`). Every entity must carry a real (non-default)
-    /// `time_stamp`, otherwise the server rejects the request with HTTP 400.
+    /// Same as [`Self::clean_partition_and_bulk_insert`] — including the atomic swap of the
+    /// partition (one `InitPartition` packet, applied under one reader lock, partition never
+    /// seen empty) — but each re-inserted row keeps its **own `TimeStamp`**
+    /// (`useTimestamp=true`). Every entity must carry a real (non-default) `time_stamp`,
+    /// otherwise the server rejects the request with HTTP 400.
     pub async fn clean_partition_and_bulk_insert_with_own_timestamp(
         &self,
         partition_key: &str,
@@ -499,6 +517,12 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
     /// table when `None`), uploads the rest under the issued `processId`, then commits so
     /// the clean + insert happen atomically. On any failure a best-effort `Cancel` is issued
     /// and the original error is returned. Every entity must carry a non-default `time_stamp`.
+    ///
+    /// Chunking does **not** weaken the snapshot-swap guarantee: nothing an uploaded chunk
+    /// carries is visible until the commit, and the commit applies the clean and the insert
+    /// together — one `InitTable` / `InitPartition` packet, applied by the reader under one
+    /// lock. **The table (or partition) is never observed empty or partially uploaded**; a
+    /// cancelled or failed process leaves the previous snapshot exactly as it was.
     ///
     /// An empty slice is a no-op — note that, unlike the non-chunked clean, it does **not**
     /// clean the table (no process is started). Use `clean_*_with_own_timestamp(&[])` to
@@ -546,8 +570,9 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
 
     /// Low-level chunked clean flow: starts a new process by uploading the first chunk
     /// (cleaning `partition_key`, or the whole table when `None`) and returns the
-    /// server-issued `processId`. Nothing is applied until the commit. Keeps each row's own
-    /// `TimeStamp`; each row must carry a non-default one.
+    /// server-issued `processId`. Nothing is applied until the commit — readers keep being
+    /// served the current snapshot for the whole upload, however long it takes. Keeps each
+    /// row's own `TimeStamp`; each row must carry a non-default one.
     pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_start(
         &self,
         partition_key: Option<&str>,
@@ -564,6 +589,8 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
     }
 
     /// Low-level chunked clean flow: appends a further chunk to an already-started process.
+    /// Still invisible to readers — the accumulated rows only become the live snapshot at the
+    /// commit.
     pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_append(
         &self,
         process_id: &str,
@@ -581,6 +608,8 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
     }
 
     /// Low-level chunked clean flow: commits the process (cleans + inserts every uploaded row).
+    /// This is the atomic point of the whole flow — the clean and the insert land together and
+    /// readers get one snapshot swap, so the table/partition is never observed empty.
     pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_commit(
         &self,
         process_id: &str,
@@ -594,7 +623,9 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         .await
     }
 
-    /// Low-level chunked clean flow: cancels the process, dropping the uploaded rows.
+    /// Low-level chunked clean flow: cancels the process, dropping the uploaded rows. The live
+    /// snapshot is left exactly as it was — an abandoned replace never empties the table or
+    /// the partition.
     pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_cancel(
         &self,
         process_id: &str,

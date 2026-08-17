@@ -131,7 +131,20 @@ writer.bulk_insert_or_replace_if_new_by_chunks(&entities, 1000).await.unwrap();
 
 **`bulk_insert_or_update_with_own_timestamp`** sits between plain bulk and `*_if_new`: it writes every row **unconditionally** (no "if new" gate) but stores the **client's `TimeStamp`** rather than the server clock — handy for replaying a snapshot while keeping each row's original version. Same mandatory-`TimeStamp` rule (default → HTTP 400); empty slice = no-op; on writer and `with_retries`.
 
-The same `useTimestamp=true` behavior is available on the **clean-and-insert** family, for replaying a snapshot that fully replaces a table/partition while keeping each row's original version:
+#### Clean-and-insert — transactional snapshot replace
+
+`clean_table_and_bulk_insert` / `clean_partition_and_bulk_insert` **atomically swap one snapshot of data for another**: the whole table, or a single partition with the rest of the table untouched. That is the whole point of these methods.
+
+The clean and the insert are **one server-side operation**, delivered to subscribers as a single `InitTable` / `InitPartition` packet and applied by the reader **under one lock** — old snapshot out, new snapshot in, in one step. **The table/partition is never observed empty or half-filled**: a concurrent read sees either the entire old snapshot or the entire new one.
+
+```rust
+w.clean_table_and_bulk_insert(&entities).await.unwrap();            // whole table
+w.clean_partition_and_bulk_insert("pk", &entities).await.unwrap();  // one partition
+```
+
+> ⚠️ **Never emulate it** with `delete_partitions` + `bulk_insert_or_replace` — two operations means two reader updates, and readers spend the gap between them looking at an empty partition/table. Removing that gap is exactly why the clean-and-insert methods exist.
+
+The same `useTimestamp=true` behavior is available on this family, for replaying a snapshot that fully replaces a table/partition while keeping each row's original version:
 
 ```rust
 w.clean_table_and_bulk_insert_with_own_timestamp(&entities).await.unwrap();
@@ -142,7 +155,9 @@ writer.clean_and_bulk_insert_by_chunks_with_own_timestamp(None, &entities, 1000)
 // low-level: _start(pk, ..) → _append(pid, ..) → _commit(pid) / _cancel(pid)
 ```
 
-All of them keep the client `TimeStamp` and require a real (non-default) one — a default → HTTP 400.
+Chunking keeps the guarantee: uploaded chunks are invisible until the commit, the commit does the same single swap, and a cancelled/failed process leaves the previous snapshot untouched.
+
+All of the `*_with_own_timestamp` ones keep the client `TimeStamp` and require a real (non-default) one — a default → HTTP 400.
 
 | Method | Writes when | Stored `TimeStamp` |
 |---|---|---|

@@ -348,6 +348,10 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         super::execution::get_all(fl_url).await
     }
 
+    /// Atomically replaces the whole table with `entities` — see
+    /// [`super::MyNoSqlDataWriter::clean_table_and_bulk_insert`]. The clean and the insert are
+    /// one operation and reach readers as a single snapshot swap, so the table is never
+    /// observed empty.
     pub async fn clean_table_and_bulk_insert(
         &self,
         entities: &[TEntity],
@@ -357,6 +361,9 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         super::execution::clean_table_and_bulk_insert(fl_url, entities, &self.sync_period).await
     }
 
+    /// Atomically replaces one partition with `entities`, leaving the rest of the table alone —
+    /// see [`super::MyNoSqlDataWriter::clean_partition_and_bulk_insert`]. One operation, one
+    /// snapshot swap on the reader: the partition is never observed empty.
     pub async fn clean_partition_and_bulk_insert(
         &self,
         partition_key: &str,
@@ -374,8 +381,9 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
     }
 
     /// Clean-and-bulk-insert keeping each row's own `TimeStamp` (`useTimestamp=true`). See
-    /// [`super::MyNoSqlDataWriter::clean_table_and_bulk_insert_with_own_timestamp`]. Every
-    /// entity must carry a real (non-default) `time_stamp`.
+    /// [`super::MyNoSqlDataWriter::clean_table_and_bulk_insert_with_own_timestamp`]. Same
+    /// atomic snapshot swap — the table is never observed empty. Every entity must carry a
+    /// real (non-default) `time_stamp`.
     pub async fn clean_table_and_bulk_insert_with_own_timestamp(
         &self,
         entities: &[TEntity],
@@ -392,6 +400,7 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
 
     /// Clean-partition-and-bulk-insert keeping each row's own `TimeStamp` (`useTimestamp=true`).
     /// See [`super::MyNoSqlDataWriter::clean_partition_and_bulk_insert_with_own_timestamp`].
+    /// Same atomic snapshot swap — the partition is never observed empty.
     /// Every entity must carry a real (non-default) `time_stamp`. (The chunked clean flow is
     /// only on the base writer — re-sending a chunk after a partial success would double-append
     /// into the server-side accumulator.)

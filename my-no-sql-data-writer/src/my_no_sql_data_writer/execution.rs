@@ -708,6 +708,12 @@ pub async fn get_all<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + S
     return Ok(None);
 }
 
+/// POST /api/Bulk/CleanAndBulkInsert — **transactionally replaces the whole table** with
+/// `entities`. The clean and the insert are one server-side operation, published to
+/// subscribers as a single `InitTable` packet which the reader applies under one lock, so the
+/// table is never observed empty or half-filled: a concurrent read sees either the entire
+/// previous snapshot or the entire new one. That atomic swap is the reason this endpoint
+/// exists — a `DeletePartitions` + `BulkInsertOrReplace` pair does not give it.
 pub async fn clean_table_and_bulk_insert<
     TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
 >(
@@ -728,6 +734,10 @@ pub async fn clean_table_and_bulk_insert<
     return Ok(());
 }
 
+/// [`clean_table_and_bulk_insert`] scoped to one partition (`partitionKey` query param): the
+/// partition is **transactionally replaced** with `entities` and the rest of the table is left
+/// untouched. Published as a single `InitPartition` packet and applied by the reader under one
+/// lock — the partition is never observed empty or half-filled.
 pub async fn clean_partition_and_bulk_insert<
     TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
 >(
@@ -751,7 +761,8 @@ pub async fn clean_partition_and_bulk_insert<
 }
 
 /// [`clean_table_and_bulk_insert`] with `useTimestamp=true`: the whole table is cleaned and
-/// re-inserted, but each row keeps its **own `TimeStamp`** instead of the server clock.
+/// re-inserted in the same transactional swap (never observed empty), but each row keeps its
+/// **own `TimeStamp`** instead of the server clock.
 /// Every entity must carry a real (non-default) `TimeStamp`, otherwise the server rejects
 /// the request with HTTP 400. (An empty slice still cleans the table — nothing to insert.)
 pub async fn clean_table_and_bulk_insert_with_own_timestamp<
@@ -782,7 +793,8 @@ pub async fn clean_table_and_bulk_insert_with_own_timestamp<
 }
 
 /// [`clean_partition_and_bulk_insert`] with `useTimestamp=true`: the partition is cleaned and
-/// re-inserted, but each row keeps its **own `TimeStamp`**. Every entity must carry a real
+/// re-inserted in the same transactional swap (never observed empty), but each row keeps its
+/// **own `TimeStamp`**. Every entity must carry a real
 /// (non-default) `TimeStamp`, otherwise the server rejects the request with HTTP 400.
 pub async fn clean_partition_and_bulk_insert_with_own_timestamp<
     TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
@@ -990,8 +1002,9 @@ pub async fn insert_or_replace_if_new_by_chunks_cancel(
 /// a clean-and-bulk-insert process that keeps each row's own `TimeStamp`. `process_id = None`
 /// starts a new process (the server issues the id and returns it); `partition_key` is honored
 /// only on that first (start) chunk and scopes the clean to that partition (`None` = whole
-/// table). Pass the issued id on every following chunk. Nothing is applied until the commit.
-/// Each row must carry a non-default `TimeStamp`.
+/// table). Pass the issued id on every following chunk. Nothing is applied until the commit —
+/// the chunks sit in a server-side accumulator while readers keep being served the current
+/// snapshot. Each row must carry a non-default `TimeStamp`.
 pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_upload<
     TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send,
 >(
@@ -1043,7 +1056,10 @@ pub async fn clean_and_bulk_insert_by_chunks_with_own_timestamp_upload<
 }
 
 /// POST /api/Bulk/CleanAndBulkInsertByChunksCommit — cleans the table (or the partition the
-/// process was started with) and inserts every accumulated row atomically.
+/// process was started with) and inserts every accumulated row atomically. This is where the
+/// uploaded chunks become visible, all at once: readers get a single `InitTable` /
+/// `InitPartition` snapshot swap, so the table/partition is never observed empty or partially
+/// uploaded, no matter how many chunks the process took.
 pub async fn clean_and_bulk_insert_by_chunks_commit(
     flurl: FlUrl,
     process_id: &str,
