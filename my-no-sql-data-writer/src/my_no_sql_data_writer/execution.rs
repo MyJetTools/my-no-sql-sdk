@@ -1134,14 +1134,36 @@ async fn check_error(response: &mut FlUrlResponse) -> Result<(), DataWriterError
     };
 
     if let Err(err) = &result {
-        my_logger::LOGGER.write_error(
-            format!("FlUrlRequest to {}", response.url.to_string()),
-            format!("{:?}", err),
-            None.into(),
-        );
+        if !is_expected_outcome(err) {
+            my_logger::LOGGER.write_error(
+                format!("FlUrlRequest to {}", response.url.to_string()),
+                format!("{:?}", err),
+                None.into(),
+            );
+        }
     }
 
     result
+}
+
+/// Errors which are the API answering normally rather than something going wrong. They are
+/// carried to the caller to act on, and are deliberately not written to the log - a routine
+/// outcome must not look like a failure of the service which is using the writer.
+///
+/// [`DataWriterError::RecordIsChanged`] is exactly that: `DeleteIf` / `Replace` answer 409
+/// whenever the row was rewritten between the read and the write, which is what the
+/// optimistic-concurrency protocol is for. The caller re-reads and decides again, and
+/// `update_entity` even retries it in a loop - logging it once per attempt turned an ordinary
+/// conflict into a stream of errors in the console.
+///
+/// [`DataWriterError::RecordNotFound`] is the same kind of answer ("it is not there any
+/// more"); every caller maps 404 before `check_error` today, so it is listed here to keep the
+/// rule in one place rather than because a 404 reaches this function.
+fn is_expected_outcome(err: &DataWriterError) -> bool {
+    match err {
+        DataWriterError::RecordIsChanged(_) | DataWriterError::RecordNotFound(_) => true,
+        _ => false,
+    }
 }
 
 async fn deserialize_error(
