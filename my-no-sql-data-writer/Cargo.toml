@@ -10,6 +10,16 @@ edition = "2021"
 default = []
 with-ssh = ["flurl/with-ssh"]
 
+# TLS for `https://` MyNoSql urls. FlUrl compiles its TLS paths only when one of these
+# is on; without either, an https url panics at request time. Pick exactly one —
+# enabling both is not an error (my-tls resolves it in favour of ring), which is what
+# `--all-features` does.
+#
+# Pure Rust (rustls-graviola): no C toolchain anywhere, but x86_64/aarch64 only.
+with-rust-tls = ["flurl/with-rust-tls"]
+# ring: mature and widely deployed, at the cost of a bundled C/assembly build.
+with-ring-tls = ["flurl/with-ring-tls"]
+
 [dependencies]
 my-no-sql-abstractions = { path = "../my-no-sql-abstractions" }
 my-logger = { tag = "1.3.0", git = "https://github.com/MyJetTools/my-logger.git" }

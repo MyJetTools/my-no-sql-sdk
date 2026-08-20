@@ -13,4 +13,6 @@ tokio = { version = "*", features = ["full"] }
 tokio-util = "*"
 parking_lot = "*"
 async-trait = "*"
-zip = { version = "*", default-features = false, features = ["deflate"] }
+# Payload compression for the TCP protocol (see `payload_compressor`). Pure-Rust
+# zlib-rs backend: no C toolchain needed to build.
+flate2 = { version = "*", default-features = false, features = ["zlib-rs"] }

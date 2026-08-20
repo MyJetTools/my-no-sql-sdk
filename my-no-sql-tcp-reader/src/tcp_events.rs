@@ -118,7 +118,10 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
             MyNoSqlTcpContract::SubscribeAsNode(_) => {}
             MyNoSqlTcpContract::Unsubscribe(_) => {}
             MyNoSqlTcpContract::TableNotFound(_) => {}
-            MyNoSqlTcpContract::CompressedPayload(_) => {}
+            MyNoSqlTcpContract::CompressedPayload(_) => {
+                // Unreachable: the serializer inflates compressed packets before dispatch.
+                panic!("Got a CompressedPayload which was not decompressed by the serializer");
+            }
             MyNoSqlTcpContract::Confirmation { confirmation_id } => self
                 .sync_handler
                 .tcp_events_pusher_got_confirmation(confirmation_id),

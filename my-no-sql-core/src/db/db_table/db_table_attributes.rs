@@ -5,7 +5,7 @@ pub struct DbTableAttributes {
     pub persist: bool,
     pub max_partitions_amount: Option<usize>,
     pub max_rows_per_partition_amount: Option<usize>,
-    /// When true, the rows of this table are kept in memory zstd-compressed
+    /// When true, the rows of this table are kept in memory DEFLATE-compressed
     /// (transparently decompressed on read). Opt-in per table.
     pub compressed: bool,
     pub created: DateTimeAsMicroseconds,

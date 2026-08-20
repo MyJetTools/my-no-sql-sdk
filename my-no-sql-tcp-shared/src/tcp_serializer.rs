@@ -34,7 +34,12 @@ impl TcpSocketSerializer<MyNoSqlTcpContract, ()> for MyNoSqlReaderTcpSerializer 
         socket_reader: &mut TSocketReader,
         _: &(),
     ) -> Result<MyNoSqlTcpContract, ReadingTcpContractFail> {
-        MyNoSqlTcpContract::deserialize(socket_reader).await
+        // The server may send any packet wrapped into `CompressedPayload`; unwrap it here so
+        // the rest of the reader only ever sees real contracts.
+        MyNoSqlTcpContract::deserialize(socket_reader)
+            .await?
+            .decompress_if_compressed()
+            .await
     }
 }
 

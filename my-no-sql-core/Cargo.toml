@@ -5,8 +5,8 @@ edition = "2021"
 
 [features]
 default = []
-# master-node keeps rows in memory and may compress them per-table, so it pulls in zstd
-master-node = ["dep:zstd"]
+# master-node keeps rows in memory and may compress them per-table, so it pulls in flate2
+master-node = ["dep:flate2"]
 debug_db_row = []
 
 
@@ -20,4 +20,7 @@ tokio = { version = "*", features = ["full"] }
 serde_json = { version = "*" }
 serde = { version = "*", features = ["derive"] }
 # Per-table in-memory row compression (master-node only). Client readers do not pull this in.
-zstd = { version = "*", optional = true }
+# Pure-Rust zlib-rs backend: no C toolchain needed to build.
+flate2 = { version = "*", optional = true, default-features = false, features = [
+    "zlib-rs",
+] }
