@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use my_no_sql_abstractions::{MyNoSqlEntity, MyNoSqlEntitySerializer};
 use rust_extensions::{
-    events_loop::{EventsLoop, EventsLoopTick},
+    events_loop::{EventsLoop, EventsLoopTick, RepeatIteration},
     ApplicationStates,
 };
 
@@ -116,7 +116,10 @@ impl<
     for MyNoSqlDataReaderCallBacksSender<TMyNoSqlEntity, TMyNoSqlDataReaderCallBacks>
 {
     async fn started(&self) {}
-    async fn tick(&self, model: PusherEvents<TMyNoSqlEntity>) {
+    async fn tick(
+        &self,
+        model: PusherEvents<TMyNoSqlEntity>,
+    ) -> RepeatIteration<PusherEvents<TMyNoSqlEntity>> {
         match model {
             PusherEvents::InsertedOrReplaced(partition_key, entities) => {
                 self.callbacks
@@ -128,6 +131,8 @@ impl<
             }
         }
         if self.item.is_some() {}
+
+        RepeatIteration::No
     }
 
     async fn finished(&self) {}

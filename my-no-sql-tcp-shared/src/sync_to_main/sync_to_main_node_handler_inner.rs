@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use rust_extensions::events_loop::{EventsLoopPublisher, EventsLoopTick};
+use rust_extensions::events_loop::{EventsLoopPublisher, EventsLoopTick, RepeatIteration};
 
 use crate::sync_to_main::DeliverToMainNodeEvent;
 
@@ -22,7 +22,7 @@ impl SyncToMainNodeHandlerInner {
 #[async_trait::async_trait]
 impl EventsLoopTick<SyncToMainNodeEvent> for SyncToMainNodeHandlerInner {
     async fn started(&self) {}
-    async fn tick(&self, event: SyncToMainNodeEvent) {
+    async fn tick(&self, event: SyncToMainNodeEvent) -> RepeatIteration<SyncToMainNodeEvent> {
         match event {
             SyncToMainNodeEvent::Connected(connection) => {
                 let mut queues = self.queues.lock();
@@ -42,6 +42,8 @@ impl EventsLoopTick<SyncToMainNodeEvent> for SyncToMainNodeHandlerInner {
                 to_main_node_pusher(&mut queues, Some(confirmation_id));
             }
         }
+
+        RepeatIteration::No
     }
     async fn finished(&self) {}
 }
