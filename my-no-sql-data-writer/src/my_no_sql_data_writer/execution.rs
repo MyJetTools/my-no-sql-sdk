@@ -25,6 +25,10 @@ const ROWS_CONTROLLER: &str = "Rows";
 const BULK_CONTROLLER: &str = "Bulk";
 const PARTITIONS_CONTROLLER: &str = "Partitions";
 
+/// The rows counter sits at the root of the api - `/api/Count` - not under `Row`. The `Row`
+/// it is grouped under in the server's swagger is not part of its path.
+const COUNT_SEGMENT: &str = "Count";
+
 pub async fn create_table_if_not_exists(
     flurl: FlUrl,
     url: &str,
@@ -418,6 +422,57 @@ pub async fn get_by_partition_key<
     }
 
     return Ok(None);
+}
+
+/// `GET /api/Count` - how many rows the table holds in `partition_key`, or in the whole table
+/// when `partition_key` is `None`. Only the number travels: the rows are never serialized,
+/// which is the whole point of asking this instead of reading the partition and counting it.
+///
+/// `Ok(None)` means the **table** does not exist. `Ok(Some(0))` means it does and the
+/// partition is empty. Those are different facts - a caller reconciling two tables acts on
+/// the first and not on the second - so a missing table is never folded into a zero. Callers
+/// must therefore hand this an `FlUrl` built **without** auto-creating the table
+/// ([`super::fl_url_factory::FlUrlFactory::get_fl_url_without_auto_create_table`]), or the
+/// table would exist by the time it is counted and `None` could never be returned.
+pub async fn get_rows_count(
+    flurl: FlUrl,
+    table_name: &str,
+    partition_key: Option<&str>,
+) -> Result<Option<usize>, DataWriterError> {
+    let mut request = flurl
+        .append_path_segment(API_SEGMENT)
+        .append_path_segment(COUNT_SEGMENT)
+        .with_table_name_as_query_param(table_name);
+
+    if let Some(partition_key) = partition_key {
+        request = request.with_partition_key_as_query_param(partition_key);
+    }
+
+    let mut response = request.get().await?;
+
+    if is_table_not_found(&mut response).await? {
+        return Ok(None);
+    }
+
+    check_error(&mut response).await?;
+
+    // Everything check_error lets through which is not a 2xx - 503 while the server is still
+    // loading, a 5xx - is a failure to answer, not an answer of "no such table". Reporting it
+    // as `None` would tell the caller the table is gone.
+    if !is_ok_result(&response) {
+        let status_code = response.get_status_code();
+        let body = response.get_body_as_slice().await?;
+        return Err(DataWriterError::Error(format!(
+            "Rows count of table {} returned status code {}. Body: {}",
+            table_name,
+            status_code,
+            String::from_utf8_lossy(body)
+        )));
+    }
+
+    let rows_count = parse_rows_count(response.get_body_as_slice().await?)?;
+
+    Ok(Some(rows_count))
 }
 
 pub async fn get_enum_case_models_by_partition_key<
@@ -1182,6 +1237,54 @@ fn is_expected_outcome(err: &DataWriterError) -> bool {
     }
 }
 
+/// "There is no such table" is the one error which is an answer rather than a failure to a
+/// counter, so [`get_rows_count`] peels it off before [`check_error`] - which would both turn
+/// it into an error and log it, once per call, about the very absence being asked about. It is
+/// done here rather than by adding [`DataWriterError::TableNotFound`] to
+/// [`is_expected_outcome`], which would silence it for every write path too, where a missing
+/// table really is a failure worth the log line.
+///
+/// **The status code alone never decides it - the body has to carry the `TableNotFound`
+/// contract.** This server says "no such table" with 400 plus that contract
+/// (`OPERATION_FAIL_HTTP_STATUS_CODE`), and answers a bare 404 for something else entirely: a
+/// reverse proxy which does not forward `/api/Count`, or a server predating the `/api` prefix.
+/// Reading such a 404 as "the table is gone" would have a reconciler rebuild a table which is
+/// present and full, so a body which is not the contract falls through to be reported as the
+/// failure it is. 404 is accepted next to 400 only under that condition, so this keeps working
+/// if the server ever moves the status.
+async fn is_table_not_found(response: &mut FlUrlResponse) -> Result<bool, DataWriterError> {
+    match response.get_status_code() {
+        400 | 404 => match deserialize_error(response).await {
+            Ok(DataWriterError::TableNotFound(_)) => Ok(true),
+            // Some other error the server named: hand it back to `check_error` to report and
+            // log the usual way.
+            Ok(_) => Ok(false),
+            // The body could not be read off the wire at all. That must surface as itself - a
+            // second read of a consumed body reports something else entirely.
+            Err(err @ DataWriterError::FlUrlError(_)) => Err(err),
+            // A body which is not the contract (a proxy's "404 - Not Found", a plain-text
+            // validation message): not an answer about the table, so it falls through.
+            Err(_) => Ok(false),
+        },
+        _ => Ok(false),
+    }
+}
+
+/// The body of `/api/Count` is the number and nothing else (the server writes it with
+/// `HttpOutput::as_text`), so it is parsed rather than deserialized. Trimmed because a
+/// text/plain body is free to carry trailing whitespace.
+fn parse_rows_count(body: &[u8]) -> Result<usize, DataWriterError> {
+    let body = std::str::from_utf8(body)?;
+
+    match body.trim().parse() {
+        Ok(rows_count) => Ok(rows_count),
+        Err(_) => Err(DataWriterError::Error(format!(
+            "Rows count endpoint returned '{}' which is not a number",
+            body
+        ))),
+    }
+}
+
 async fn deserialize_error(
     response: &mut FlUrlResponse,
 ) -> Result<DataWriterError, DataWriterError> {
@@ -1397,6 +1500,22 @@ mod tests {
         let body = as_json.into_vec();
 
         println!("{}", std::str::from_utf8(&body).unwrap());
+    }
+
+    #[test]
+    fn test_parse_rows_count() {
+        assert_eq!(super::parse_rows_count(b"0").unwrap(), 0);
+        assert_eq!(super::parse_rows_count(b"138081").unwrap(), 138081);
+        // text/plain is free to carry trailing whitespace
+        assert_eq!(super::parse_rows_count(b"51062\n").unwrap(), 51062);
+    }
+
+    #[test]
+    fn test_parse_rows_count_of_a_body_which_is_not_a_number() {
+        // Anything but a number is a failure to answer - it must not be read as a count.
+        assert!(super::parse_rows_count(b"").is_err());
+        assert!(super::parse_rows_count(b"-1").is_err());
+        assert!(super::parse_rows_count(b"{\"amount\":5}").is_err());
     }
 
     /// Mirrors what `#[my_no_sql_entity]` generates for the TimeStamp field, so we can

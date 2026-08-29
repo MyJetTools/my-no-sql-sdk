@@ -295,6 +295,38 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
         .await
     }
 
+    /// How many rows the table holds in `partition_key` - or in the whole table, when it is
+    /// `None` - without a single row crossing the network. This is the cheap way to ask "do
+    /// these two tables still agree?" on a schedule: reading the partition to count it costs
+    /// its whole contents for an answer which, in the steady state, is "nothing to do".
+    ///
+    /// Same shape as [`Self::get_by_partition_key`], and the same distinction, which is the
+    /// point of the `Option`:
+    ///
+    /// - `None` - the **table** does not exist.
+    /// - `Some(0)` - it exists and the partition (or the whole table) is empty.
+    ///
+    /// Those are different facts, so a missing table is never folded into a zero.
+    ///
+    /// This is the one writer method which does **not** auto-create the table on its way out,
+    /// even when the writer was built with auto-creation on (the default). A counter must not
+    /// bring into existence the thing it was asked to count: going through the usual path
+    /// would create the table empty and answer `Some(0)`, making `None` unreachable and the
+    /// first call a write. Every other method keeps auto-creating as before.
+    ///
+    /// Unlike a read it also does not touch the partition's last-read moment, so counting on a
+    /// timer never keeps a partition alive against `max_partitions_amount` collection.
+    pub async fn get_rows_count(
+        &self,
+        partition_key: Option<&str>,
+    ) -> Result<Option<usize>, DataWriterError> {
+        let (fl_url, _) = self
+            .fl_url_factory
+            .get_fl_url_without_auto_create_table()
+            .await?;
+        super::execution::get_rows_count(fl_url, TEntity::TABLE_NAME, partition_key).await
+    }
+
     pub async fn get_enum_case_models_by_partition_key<
         TResult: MyNoSqlEntity
             + my_no_sql_abstractions::GetMyNoSqlEntitiesByPartitionKey

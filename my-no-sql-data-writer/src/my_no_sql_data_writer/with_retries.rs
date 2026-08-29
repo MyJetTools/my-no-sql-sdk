@@ -214,6 +214,21 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         .await
     }
 
+    /// See [`super::MyNoSqlDataWriter::get_rows_count`]. `None` = the table does not exist,
+    /// `Some(0)` = it exists and the partition is empty; and, as there, the table is not
+    /// auto-created by the asking. The retries are safe because the request only reads.
+    pub async fn get_rows_count(
+        &self,
+        partition_key: Option<&str>,
+    ) -> Result<Option<usize>, DataWriterError> {
+        let (fl_url, _) = self
+            .fl_url_factory
+            .get_fl_url_without_auto_create_table()
+            .await?;
+        let fl_url = fl_url.with_retries(self.max_attempts);
+        super::execution::get_rows_count(fl_url, TEntity::TABLE_NAME, partition_key).await
+    }
+
     pub async fn get_enum_case_models_by_partition_key<
         TResult: MyNoSqlEntity
             + my_no_sql_abstractions::GetMyNoSqlEntitiesByPartitionKey

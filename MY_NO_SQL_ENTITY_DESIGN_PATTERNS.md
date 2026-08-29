@@ -95,6 +95,11 @@ let entity = w.get_entity("partition_key", "row_key", None).await.unwrap();
 // Get all in partition → Result<Option<Vec<T>>>
 let items = w.get_by_partition_key("pk", None).await.unwrap().unwrap_or_default();
 
+// How many rows in a partition, WITHOUT fetching them -> Result<Option<usize>>
+// None = no such table; Some(0) = table exists, partition empty. Does not auto-create the table.
+let n = w.get_rows_count(Some("pk")).await.unwrap();
+let total = w.get_rows_count(None).await.unwrap();   // whole table
+
 // Delete row
 w.delete_row("partition_key", "row_key").await.unwrap();
 ```
@@ -342,6 +347,8 @@ let entity = SessionEntity {
 | Setting `time_stamp: Timestamp::now()` for normal writes | Always `time_stamp: Default::default()` — the server stamps its own time |
 | Calling any `*_if_new` or `*_with_own_timestamp` method with `time_stamp: Default::default()` | The **opposite** rule: these send the client's version — `time_stamp: DateTimeAsMicroseconds::now().into()`. A default TimeStamp → HTTP 400 |
 | Assigning `e.time_stamp` inside an `update_entity` closure | Never touch it — it is the read version that detects concurrent writes. Overwriting it defeats optimistic concurrency (and re-reads carry a fresh version anyway) |
+| Loading a whole partition just to count its rows | `w.get_rows_count(Some("pk"))` — the number comes back on its own, the rows never leave the server. `None` = no such table, `Some(0)` = table exists and is empty |
+| Reading `get_rows_count() == Ok(None)` as "empty" | It means the **table is not there**. Empty is `Ok(Some(0))`. An unreachable server / unknown namespace is `Err`, never `None` |
 | Treating a 409 from `replace_entity` as fatal | It means the row changed under you — re-read and retry (or just use `update_entity`, which loops for you) |
 
 ---

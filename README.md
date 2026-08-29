@@ -185,6 +185,8 @@ w.bulk_insert_or_replace(&entities).await?;
 let one = w.get_entity("instruments", "EURUSD", None).await?;      // Result<Option<T>>
 let part = w.get_by_partition_key("instruments", None).await?;     // Result<Option<Vec<T>>>
 
+let n = w.get_rows_count(Some("instruments")).await?;              // Result<Option<usize>> — count only
+
 w.delete_row("instruments", "EURUSD").await?;
 w.delete_partitions(&["instruments"]).await?;
 
@@ -196,6 +198,8 @@ w.bulk_delete(&rows_to_delete).await?;
 
 These deletes are unconditional. To delete only a row which has not changed since you read
 it, see [Optimistic-concurrency delete](#optimistic-concurrency-delete-delete_entity_if--bulk_delete_if).
+To ask how many rows a partition holds without moving the rows, see
+[Counting rows without reading them](#counting-rows-without-reading-them-get_rows_count).
 
 The writer returns **owned** entities (`Result<Option<T>, DataWriterError>`), unlike the reader which hands out `Arc<T>`.
 
@@ -377,6 +381,51 @@ The `TimeStamp` is **mandatory** here, like in the `*_if_new` family: an unreada
 | `delete_row` / `bulk_delete` | n/a — deletes unconditionally | `Ok(None)` / ignored |
 | `delete_entity_if` / `delete_row_if` | `DataWriterError::RecordIsChanged` (409) | `Ok(None)` (404) |
 | `bulk_delete_if` / `bulk_delete_if_rows` | `skipped` + `TimeStampMismatch` (200) | `skipped` + `NotFound` (200) |
+
+### Counting rows without reading them (`get_rows_count`)
+
+`get_rows_count` answers "how many rows are in this partition?" over `GET /api/Count` — the number comes back
+on its own, the rows never leave the server. It exists for the reconciliation shape: a job which every minute
+asks whether table A and table B still agree on one partition, and whose answer in the steady state is "they do,
+do nothing". Reading both partitions to count them would move hundreds of thousands of rows across the network
+to learn that nothing needs doing.
+
+```rust
+let w = writer.with_retries(3);
+
+let in_partition = w.get_rows_count(Some("instruments")).await?;   // Result<Option<usize>>
+let in_table = w.get_rows_count(None).await?;                      // omit the partition → whole table
+```
+
+The `Option` carries a distinction the caller of a counter needs and a bare number cannot express:
+
+| Result | Meaning |
+|---|---|
+| `Ok(None)` | The **table** does not exist |
+| `Ok(Some(0))` | The table exists and the partition (or the whole table) is empty |
+| `Ok(Some(n))` | `n` rows |
+
+"There is no table" and "the table is empty" are different facts, so the first is never reported as a zero. It is
+the same shape as `get_by_partition_key`, deliberately, so the two read alike.
+
+Two behaviours are specific to this method:
+
+- **It never auto-creates the table**, even though the writer does so by default on every other call. A counter
+  must not bring into existence the thing it was asked to count — going through the usual path would create the
+  table empty, answer `Some(0)`, and make `None` unreachable. So `Ok(None)` is a real answer here, on any writer.
+- **It does not touch the partition's last-read moment**, so counting on a timer never keeps a partition alive
+  against `set_max_partitions_amount` collection the way a read would.
+
+The count is exact, not an estimate: the server returns the length of the very same in-memory row collection a
+download would serialize, taken under one read lock. Two separate calls are still two moments in time — concurrent
+writes move the number between them, which is why a mismatch is worth re-checking before acting on it.
+
+A missing table is a normal answer here and is **not** written to the error log, unlike everywhere else in the
+writer, where a missing table is a genuine failure. Anything else — an unreachable host, an unknown namespace, a
+server still loading (`503`), a `404` from a proxy which does not forward `/api/Count` — comes back as `Err`, never
+as `Ok(None)`: a reconciler must not read "I could not ask" as "the table is gone".
+
+---
 
 ### HTTP/2
 

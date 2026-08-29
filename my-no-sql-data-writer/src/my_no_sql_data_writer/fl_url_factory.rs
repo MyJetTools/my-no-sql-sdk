@@ -94,6 +94,23 @@ impl FlUrlFactory {
         Ok((result, connection_string.host))
     }
 
+    /// The FlUrl of a request which must NOT bring the table into existence as a side effect.
+    ///
+    /// [`Self::get_fl_url`] auto-creates the table on the first request when the writer was
+    /// built with auto-creation on - which is the default, and which is right for a write and
+    /// wrong for a question about whether the table is there at all. Asking through that path
+    /// would make the answer true: the table would be created empty and the count would come
+    /// back as `0` for a table which did not exist a moment earlier.
+    pub async fn get_fl_url_without_auto_create_table(
+        &self,
+    ) -> Result<(FlUrl, String), DataWriterError> {
+        let connection_string = parse_connection_string(self.settings.get_url().await.as_str())?;
+
+        let result = self.create_fl_url(&connection_string).await;
+
+        Ok((result, connection_string.host))
+    }
+
     pub async fn create_table_if_not_exists(
         &self,
         connection_string: &ConnectionString,
