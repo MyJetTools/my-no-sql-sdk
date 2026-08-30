@@ -69,12 +69,18 @@ pub async fn create_table(
     create_table_errors_handler(&mut response, "create_table", url).await
 }
 
+/// POST /api/Row/Insert - writes the row only if it is not there yet. A key which is already
+/// taken comes back as [`DataWriterError::RecordAlreadyExists`], and it is a reliable answer:
+/// the server re-checks the key under the table write lock while inserting, so of two
+/// concurrent inserts of the same partition+row exactly one succeeds and the other gets that
+/// error. That is what makes `Insert` usable as the create half of an insert-or-update loop
+/// (see `MyNoSqlDataWriter::insert_or_update`).
 pub async fn insert_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>(
     flurl: FlUrl,
     entity: &TEntity,
     sync_period: &DataSynchronizationPeriod,
 ) -> Result<(), DataWriterError> {
-    let response = flurl
+    let mut response = flurl
         .append_path_segment(ROW_CONTROLLER)
         .append_path_segment("Insert")
         .append_data_sync_period(sync_period)
@@ -85,6 +91,11 @@ pub async fn insert_entity<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sy
     if is_ok_result(&response) {
         return Ok(());
     }
+
+    // Turns the server's `RecordAlreadyExists` contract into the typed variant instead of an
+    // opaque `Error(<body>)` - a caller which is racing another writer has to be able to tell
+    // "the key is taken" from "the write failed".
+    check_error(&mut response).await?;
 
     let reason = response.receive_body().await?;
     let reason = String::from_utf8(reason)?;
@@ -1230,9 +1241,15 @@ async fn check_error(response: &mut FlUrlResponse) -> Result<(), DataWriterError
 /// [`DataWriterError::RecordNotFound`] is the same kind of answer ("it is not there any
 /// more"); every caller maps 404 before `check_error` today, so it is listed here to keep the
 /// rule in one place rather than because a 404 reaches this function.
+///
+/// [`DataWriterError::RecordAlreadyExists`] joined them when `Insert` started reporting it
+/// typed: it is the answer `insert_or_update` expects whenever another writer created the same
+/// key first, and under contention that happens on a normal path, once per lost race.
 fn is_expected_outcome(err: &DataWriterError) -> bool {
     match err {
-        DataWriterError::RecordIsChanged(_) | DataWriterError::RecordNotFound(_) => true,
+        DataWriterError::RecordIsChanged(_)
+        | DataWriterError::RecordNotFound(_)
+        | DataWriterError::RecordAlreadyExists(_) => true,
         _ => false,
     }
 }
@@ -1262,8 +1279,10 @@ async fn is_table_not_found(response: &mut FlUrlResponse) -> Result<bool, DataWr
             // The body could not be read off the wire at all. That must surface as itself - a
             // second read of a consumed body reports something else entirely.
             Err(err @ DataWriterError::FlUrlError(_)) => Err(err),
-            // A body which is not the contract (a proxy's "404 - Not Found", a plain-text
-            // validation message): not an answer about the table, so it falls through.
+            // A body which could not even be read as utf8. It is not an answer about the
+            // table either, so it falls through the same way. (A body which is simply not the
+            // contract - a proxy's "404 - Not Found", a plain-text validation message - is not
+            // here: `deserialize_error` hands it back as `Ok(Error(<body>))`, caught above.)
             Err(_) => Ok(false),
         },
         _ => Ok(false),
@@ -1303,12 +1322,10 @@ async fn deserialize_error(
             "JsonParseFail" => DataWriterError::ServerCouldNotParseJson(fail_contract.message),
             _ => DataWriterError::Error(format!("Not supported error. {:?}", fail_contract)),
         },
-        Err(err) => {
-            return Err(DataWriterError::Error(format!(
-                "Failed to deserialize error: {:?}",
-                err
-            )))
-        }
+        // Not the error contract at all (a plain-text 400 from the HTTP layer, say). The body
+        // is the whole diagnostic there, so it is carried through as-is - a parser complaint
+        // in its place would throw away the only thing that says what went wrong.
+        Err(_) => DataWriterError::Error(body_as_str.to_string()),
     };
 
     Ok(result)
@@ -1432,6 +1449,125 @@ where
             Err(err) => return Err(err),
         }
     }
+}
+
+/// The insert-or-update loop, one step below `MyNoSqlDataWriter::insert_or_update`: which of
+/// the two closures runs is decided by what the read found, and every way two writers can
+/// collide is answered by reading again rather than by failing.
+///
+/// * missing -> `create` -> `insert`. A lost race is `RecordAlreadyExists`, and the next read
+///   finds the row the winner wrote, so the `update` branch takes over from there.
+/// * present -> `update` -> `replace` with the `TimeStamp` the entity was read with. A lost
+///   race is `RecordIsChanged` (rewritten under us) or `RecordNotFound` (deleted under us),
+///   and the next read is what says which branch is the right one now.
+///
+/// `update` returns whether the row has to be written at all: it gets the row it would change
+/// and can answer `false` after looking at it - the stored row already says what it should, so
+/// there is nothing to write and no reason to spend a `Replace` (or to lose a race over one).
+/// The entity is then returned as read.
+///
+/// Every lost race costs one attempt out of `max_attempts` and the last one is returned as it
+/// came. `create` and `update` are only ever called right after a read, so neither of them
+/// ever works on a state older than the attempt it belongs to.
+pub(crate) async fn run_insert_or_update<
+    TEntity,
+    TCreate,
+    TUpdate,
+    FRead,
+    RFut,
+    FInsert,
+    IFut,
+    FReplace,
+    PFut,
+>(
+    max_attempts: usize,
+    mut create: TCreate,
+    mut update: TUpdate,
+    mut read: FRead,
+    mut insert: FInsert,
+    mut replace: FReplace,
+) -> Result<TEntity, DataWriterError>
+where
+    TCreate: FnMut() -> TEntity,
+    TUpdate: FnMut(&mut TEntity) -> bool,
+    FRead: FnMut() -> RFut,
+    RFut: std::future::Future<Output = Result<Option<TEntity>, DataWriterError>>,
+    FInsert: FnMut(TEntity) -> IFut,
+    IFut: std::future::Future<Output = (TEntity, Result<(), DataWriterError>)>,
+    FReplace: FnMut(TEntity) -> PFut,
+    PFut: std::future::Future<Output = (TEntity, Result<(), DataWriterError>)>,
+{
+    let mut attempt: usize = 0;
+
+    loop {
+        let (entity, write_result) = match read().await? {
+            Some(mut entity) => {
+                if !update(&mut entity) {
+                    // The closure looked at the row and decided it is already right. Writing it
+                    // back would only be a way to lose a race with a writer who has something
+                    // to say.
+                    return Ok(entity);
+                }
+
+                replace(entity).await
+            }
+            None => {
+                let entity = create();
+                insert(entity).await
+            }
+        };
+
+        match write_result {
+            Ok(()) => return Ok(entity),
+            Err(err) if is_lost_race(&err) => {
+                attempt += 1;
+                if attempt >= max_attempts {
+                    return Err(err);
+                }
+                // Otherwise loop: read again and let the fresh state pick the branch.
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// The three ways `insert_or_update` loses a race to another writer. All of them mean "read
+/// again"; none of them means the write is impossible.
+fn is_lost_race(err: &DataWriterError) -> bool {
+    match err {
+        // Insert: the key was taken between our read and our insert.
+        DataWriterError::RecordAlreadyExists(_)
+        // Replace: the row was rewritten between our read and our replace.
+        | DataWriterError::RecordIsChanged(_)
+        // Replace: the row was deleted between our read and our replace.
+        | DataWriterError::RecordNotFound(_) => true,
+        _ => false,
+    }
+}
+
+/// Both closures may shape the entity however they like, but neither may move it to another
+/// key: the loop reads `partition_key` / `row_key`, so an entity carrying different keys would
+/// be written somewhere else and reported as success while the row which was asked for is
+/// still missing - and the next call would do it all over again. `built_by` names the closure
+/// which produced the entity, so the message says which one to go and look at.
+pub(crate) fn ensure_entity_keys_match<TEntity: MyNoSqlEntity>(
+    entity: &TEntity,
+    partition_key: &str,
+    row_key: &str,
+    built_by: &str,
+) -> Result<(), DataWriterError> {
+    if entity.get_partition_key() != partition_key || entity.get_row_key() != row_key {
+        return Err(DataWriterError::Error(format!(
+            "insert_or_update for ['{}', '{}'] is about to write an entity with ['{}', '{}'] - the '{}' closure must not change the keys of the row",
+            partition_key,
+            row_key,
+            entity.get_partition_key(),
+            entity.get_row_key(),
+            built_by,
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1779,5 +1915,419 @@ mod tests {
 
         assert!(matches!(result, Err(DataWriterError::RecordNotFound(_))));
         assert_eq!(replace_calls.get(), 1, "a non-conflict error must not be retried");
+    }
+
+    // A compile-time check of the public insert-or-update surface. The loop itself is tested
+    // above through its closures; what this pins is that the closures a caller actually writes
+    // satisfy the bounds - including the "which branch won" flag being mutated inside `create`
+    // while `update` is live, which is the one shape the borrow checker could refuse. Never
+    // called: type-checking it is the whole point.
+    #[allow(dead_code)]
+    async fn insert_or_update_is_usable_as_documented(
+        writer: &crate::MyNoSqlDataWriter<TestEntity>,
+        with_retries: &crate::MyNoSqlDataWriterWithRetries<TestEntity>,
+    ) -> Result<(), DataWriterError> {
+        let mut created = false;
+
+        let entity = writer
+            .insert_or_update(
+                "pk",
+                "rk",
+                || {
+                    created = true;
+                    TestEntity {
+                        partition_key: "pk".to_string(),
+                        row_key: "rk".to_string(),
+                    }
+                },
+                // Read the row, decide nothing has to change, and say so.
+                |e: &mut TestEntity| e.partition_key != "pk",
+            )
+            .await?;
+
+        let _ = (entity, created);
+
+        with_retries
+            .insert_or_update_with_max_attempts(
+                "pk",
+                "rk",
+                10,
+                || TestEntity {
+                    partition_key: "pk".to_string(),
+                    row_key: "rk".to_string(),
+                },
+                |_e: &mut TestEntity| true,
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    // ---- insert-or-update loop ---------------------------------------------------------
+    //
+    // The loop's whole job is to pick a branch from what the read just saw and to survive the
+    // three ways the other writer can get in the way, so every test below fakes a read which
+    // changes its answer between attempts.
+
+    #[tokio::test]
+    async fn insert_or_update_creates_the_row_when_it_is_missing() {
+        let create_calls = Cell::new(0i32);
+        let update_calls = Cell::new(0i32);
+        let insert_calls = Cell::new(0i32);
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || {
+                create_calls.set(create_calls.get() + 1);
+                LoopEntity {
+                    version: 0,
+                    value: 7,
+                }
+            },
+            |_e: &mut LoopEntity| {
+                update_calls.set(update_calls.get() + 1);
+                true
+            },
+            || async { Ok(None) },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap(),
+            LoopEntity {
+                version: 0,
+                value: 7
+            }
+        );
+        assert_eq!(create_calls.get(), 1);
+        assert_eq!(insert_calls.get(), 1);
+        assert_eq!(update_calls.get(), 0, "update belongs to the other branch");
+        assert_eq!(replace_calls.get(), 0, "replace belongs to the other branch");
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_switches_to_update_when_another_writer_inserted_first() {
+        // The first read says the row is missing; by the time our insert lands, someone else
+        // has created it - and every read after that sees their row (version 42).
+        let read_calls = Cell::new(0i32);
+        let create_calls = Cell::new(0i32);
+        let update_calls = Cell::new(0i32);
+        let insert_calls = Cell::new(0i32);
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || {
+                create_calls.set(create_calls.get() + 1);
+                LoopEntity {
+                    version: 0,
+                    value: 7,
+                }
+            },
+            |e: &mut LoopEntity| {
+                update_calls.set(update_calls.get() + 1);
+                e.value += 1;
+                true
+            },
+            || {
+                let n = read_calls.get() + 1;
+                read_calls.set(n);
+                async move {
+                    if n == 1 {
+                        Ok(None)
+                    } else {
+                        Ok(Some(LoopEntity {
+                            version: 42,
+                            value: 100,
+                        }))
+                    }
+                }
+            },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move {
+                    (
+                        e,
+                        Err(DataWriterError::RecordAlreadyExists(
+                            "Record already exists".to_string(),
+                        )),
+                    )
+                }
+            },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+        )
+        .await;
+
+        // The winner's row is what we ended up updating - the entity `create` built is dropped.
+        assert_eq!(
+            result.unwrap(),
+            LoopEntity {
+                version: 42,
+                value: 101
+            }
+        );
+        assert_eq!(read_calls.get(), 2, "a lost insert must be re-read");
+        assert_eq!(create_calls.get(), 1);
+        assert_eq!(insert_calls.get(), 1);
+        assert_eq!(update_calls.get(), 1);
+        assert_eq!(replace_calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_retries_the_update_branch_on_a_version_conflict() {
+        let read_calls = Cell::new(0i32);
+        let replace_calls = Cell::new(0i32);
+        let stored_version = Cell::new(10i64);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || panic!("create must not run while the row is there"),
+            |e: &mut LoopEntity| {
+                e.value += 1;
+                true
+            },
+            || {
+                read_calls.set(read_calls.get() + 1);
+                let version = stored_version.get();
+                async move {
+                    Ok(Some(LoopEntity {
+                        version,
+                        value: 100,
+                    }))
+                }
+            },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+            |e: LoopEntity| {
+                let n = replace_calls.get() + 1;
+                replace_calls.set(n);
+                // The row moves on under us for the first two attempts.
+                stored_version.set(stored_version.get() + 1);
+                async move {
+                    if n < 3 {
+                        (
+                            e,
+                            Err(DataWriterError::RecordIsChanged("changed".to_string())),
+                        )
+                    } else {
+                        (e, Ok(()))
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap(),
+            LoopEntity {
+                version: 12,
+                value: 101
+            }
+        );
+        assert_eq!(read_calls.get(), 3, "must re-read on every conflict");
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_falls_back_to_create_when_the_row_is_deleted_under_us() {
+        // Read sees the row, but it is gone by the time we replace it (404). The loop must not
+        // give up on a row which simply has to be created instead.
+        let read_calls = Cell::new(0i32);
+        let create_calls = Cell::new(0i32);
+        let insert_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || {
+                create_calls.set(create_calls.get() + 1);
+                LoopEntity {
+                    version: 0,
+                    value: 7,
+                }
+            },
+            |e: &mut LoopEntity| {
+                e.value += 1;
+                true
+            },
+            || {
+                let n = read_calls.get() + 1;
+                read_calls.set(n);
+                async move {
+                    if n == 1 {
+                        Ok(Some(LoopEntity {
+                            version: 5,
+                            value: 100,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+            |e: LoopEntity| async move {
+                (
+                    e,
+                    Err(DataWriterError::RecordNotFound("gone".to_string())),
+                )
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap(),
+            LoopEntity {
+                version: 0,
+                value: 7
+            }
+        );
+        assert_eq!(read_calls.get(), 2);
+        assert_eq!(create_calls.get(), 1);
+        assert_eq!(insert_calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_gives_up_after_max_attempts() {
+        // A pathological writer keeps taking the key back before we get to it.
+        let insert_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            3,
+            || LoopEntity {
+                version: 0,
+                value: 7,
+            },
+            |_e: &mut LoopEntity| true,
+            || async { Ok(None) },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move {
+                    (
+                        e,
+                        Err(DataWriterError::RecordAlreadyExists("taken".to_string())),
+                    )
+                }
+            },
+            |e: LoopEntity| async move { (e, Ok(())) },
+        )
+        .await;
+
+        match result {
+            Err(DataWriterError::RecordAlreadyExists(msg)) => assert_eq!(msg, "taken"),
+            other => panic!("expected RecordAlreadyExists, got {:?}", other),
+        }
+        assert_eq!(
+            insert_calls.get(),
+            3,
+            "must stop exactly at max_attempts, keeping the last conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_propagates_a_real_failure_without_retrying() {
+        let insert_calls = Cell::new(0i32);
+        let read_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || LoopEntity {
+                version: 0,
+                value: 7,
+            },
+            |_e: &mut LoopEntity| true,
+            || {
+                read_calls.set(read_calls.get() + 1);
+                async { Ok(None) }
+            },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move { (e, Err(DataWriterError::Error("table is dead".to_string()))) }
+            },
+            |e: LoopEntity| async move { (e, Ok(())) },
+        )
+        .await;
+
+        assert!(matches!(result, Err(DataWriterError::Error(_))));
+        assert_eq!(insert_calls.get(), 1, "a real failure is not a lost race");
+        assert_eq!(read_calls.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn insert_or_update_writes_nothing_when_the_update_closure_declines() {
+        // The closure is handed the row, sees it already says what it should, and answers
+        // `false`. Nothing may go out then - the point of that answer is to save the write, not
+        // just to skip the change.
+        let read_calls = Cell::new(0i32);
+        let insert_calls = Cell::new(0i32);
+        let replace_calls = Cell::new(0i32);
+
+        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
+            5,
+            || panic!("create must not run while the row is there"),
+            |e: &mut LoopEntity| e.value != 100,
+            || {
+                read_calls.set(read_calls.get() + 1);
+                async {
+                    Ok(Some(LoopEntity {
+                        version: 3,
+                        value: 100,
+                    }))
+                }
+            },
+            |e: LoopEntity| {
+                insert_calls.set(insert_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+            |e: LoopEntity| {
+                replace_calls.set(replace_calls.get() + 1);
+                async move { (e, Ok(())) }
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap(),
+            LoopEntity {
+                version: 3,
+                value: 100
+            },
+            "the row comes back exactly as it was read"
+        );
+        assert_eq!(read_calls.get(), 1);
+        assert_eq!(replace_calls.get(), 0, "declining must not send a Replace");
+        assert_eq!(insert_calls.get(), 0);
+    }
+
+    #[test]
+    fn create_may_not_build_an_entity_under_another_key() {
+        let entity = TestEntity {
+            partition_key: "pk".to_string(),
+            row_key: "rk".to_string(),
+        };
+
+        assert!(super::ensure_entity_keys_match(&entity, "pk", "rk", "create").is_ok());
+
+        match super::ensure_entity_keys_match(&entity, "pk", "other-rk", "create") {
+            Err(DataWriterError::Error(msg)) => {
+                assert!(msg.contains("'other-rk'"), "the message must name both keys: {}", msg);
+                assert!(msg.contains("'rk'"), "the message must name both keys: {}", msg);
+            }
+            other => panic!("expected a key mismatch error, got {:?}", other),
+        }
     }
 }

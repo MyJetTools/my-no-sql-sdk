@@ -326,6 +326,63 @@ The closure must not overwrite `time_stamp` — on every retry the version comes
 
 The low-level `replace_entity(&entity)` is also available (both on the writer and `with_retries`) when you want to drive the loop yourself — the entity must carry the `TimeStamp` it was read with.
 
+### Insert-or-update in one call (`insert_or_update`)
+
+When the row may or may not be there and you have something to do in either case, `insert_or_update` runs the whole dance in one call: it reads, then either **creates** the row with your `create` closure or **changes** it with your `update` closure — and re-reads its way out of every race it loses to another writer.
+
+```rust
+let mut created = false;
+
+let entity = w.insert_or_update(
+    "instruments",
+    "EURUSD",
+    || {                                        // the row is not there — build it
+        created = true;
+        InstrumentEntity {
+            partition_key: "instruments".to_string(),
+            row_key: "EURUSD".to_string(),
+            time_stamp: Default::default(),     // the server stamps it
+            name: "Euro vs Dollar".to_string(),
+            digits: 5,
+        }
+    },
+    |e| {                                       // the row is there — change it, or don't
+        if e.digits == 5 {
+            return false;                       // already right → nothing is written at all
+        }
+        e.digits = 5;                           // …and never assign e.time_stamp
+        true                                    // true → write it back
+    },
+).await?;                                       // Result<T> — the entity as it was written
+
+// Custom limit on lost races (default 5) — same two closures:
+w.insert_or_update_with_max_attempts("instruments", "EURUSD", 10, create_fn, update_fn).await?;
+```
+
+Everything about concurrency is inside the method:
+
+| The read found | It writes with | Another writer got there first | What the loop does |
+|---|---|---|---|
+| nothing | `Insert` (`create()`) | `RecordAlreadyExists` (400) | re-reads, sees their row, applies `update` to **it** — the winner's row is never overwritten blindly |
+| the row | `Replace` with the read `TimeStamp` | `RecordIsChanged` (409) | re-reads the fresh version and re-applies `update` |
+| the row | `Replace` with the read `TimeStamp` | `RecordNotFound` (404) — deleted meanwhile | re-reads, now there is nothing, so `create()` + `Insert` |
+| the row, and `update` answered `false` | nothing at all | — | returns the row as read |
+
+`Insert` is safe to race on: the server re-checks the key **under the table write lock**, so of two concurrent inserts of the same partition+row exactly one succeeds and the other gets `RecordAlreadyExists` — which is the signal this loop turns into "switch to the update branch".
+
+**`update` returns whether to write.** It is handed the row it would change, so it can read the fields, decide there is nothing to do, and answer `false` — no `Replace` is sent, no race is entered, and the call returns the entity as it was read. `true` means "write what I just changed". That is the cheap way to do read-and-maybe-write: one round trip when the row already says what it should.
+
+Both closures can therefore run more than once, always on state that was just read, so write them as *the end state you want* rather than as a step away from a state they remember (`e.digits = 5`, not `e.digits += 1` — an increment would be applied again on every retry). They are `FnMut`: a flag set inside them, like `created` above, is how you find out afterwards which branch won.
+
+`create()` must build the entity under the same `partition_key`/`row_key` the call was made for and leave `time_stamp: Default::default()`; `update` must not assign `time_stamp` at all — it carries the read version this whole protocol stands on. Neither closure may move the row to another key: an entity whose keys do not match the call is refused with an error instead of being written to the wrong place. After `max_attempts` lost races the last conflict comes back as `DataWriterError::RecordAlreadyExists` or `DataWriterError::RecordIsChanged`.
+
+Two things worth knowing before you use the returned entity:
+
+- **Its `TimeStamp` is stale.** What comes back is the entity that was *sent*, not a fresh read: `time_stamp` is the version this attempt read, or the default the created entity carried — never the one the server has just stamped. Passing it straight to `replace_entity` / `delete_entity_if` is a guaranteed 409; read the row again first.
+- **The table still has to exist.** As with every other write: a writer built with `CreateTableParams` creates it on its first request (the read this loop starts with counts as one), and without them a missing table is a `TableNotFound` error, not a reason to create one.
+
+Available on the writer and on `with_retries`, where the two kinds of retry stay separate: the wrapper re-sends a request whose *transport* failed, `max_attempts` counts only races actually lost to another writer. FlUrl replays idempotent requests only, so those transport retries cover the read (GET) and the replace (PUT) but not the insert (POST) — a POST that may already have landed must not be sent twice.
+
 ### Optimistic-concurrency delete (`delete_entity_if` / `bulk_delete_if`)
 
 The same *read version → act on that version* rule applied to deletes: a row is removed **only while its stored `TimeStamp` is still the one you read**. Use it whenever the decision to delete was made from data you read — a row somebody rewrote in the meantime is a row you have not seen, and deleting it blindly would throw that write away.

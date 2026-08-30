@@ -89,6 +89,12 @@ w.bulk_insert_or_update_with_own_timestamp(&entities).await.unwrap();
 // Do NOT touch time_stamp in the closure — it carries the read version. See note below.
 let updated = w.update_entity("pk", "rk", |e| e.some_field = 42).await.unwrap(); // Option<T>
 
+// Create-or-change in one call: read → create-closure if missing, update-closure if there,
+// retrying every race (a lost Insert becomes an update of the winner's row). The update
+// closure returns bool: false = the row is already right, nothing is written. See below.
+let entity = w.insert_or_update("pk", "rk", || build_entity(), |e| { e.some_field = 42; true })
+    .await.unwrap();                                                             // T
+
 // Get one entity → Result<Option<T>>
 let entity = w.get_entity("partition_key", "row_key", None).await.unwrap();
 
@@ -195,6 +201,49 @@ Errors: **409** → `DataWriterError::RecordIsChanged` (returned only after atte
 The low-level `replace_entity(&entity)` (on the writer and `with_retries`) is available when you want to drive the loop yourself — the entity must carry the `TimeStamp` it was read with.
 
 > This is **not** the "set a real time_stamp" exception that `*_if_new` is: with `update_entity` you never set `time_stamp` at all — it comes from the read entity and flows straight back.
+
+#### Insert-or-update in one call — `insert_or_update`
+
+For the very common "create it if it is not there, otherwise change it" — where doing it by hand means a `get_entity`, an `if`, and a race with every other writer doing the same. `insert_or_update` takes both closures and keeps the whole protocol inside:
+
+```rust
+let mut created = false;
+
+let entity = w.insert_or_update(
+    "instruments",
+    "EURUSD",
+    || {                                   // row missing → build it (same pk/rk, default TimeStamp)
+        created = true;
+        InstrumentEntity {
+            partition_key: "instruments".to_string(),
+            row_key: "EURUSD".to_string(),
+            time_stamp: Default::default(),
+            name: "Euro vs Dollar".to_string(),
+            digits: 5,
+        }
+    },
+    |e| {                                  // row there → look at it and decide
+        if e.digits == 5 {
+            return false;                  // nothing to change → nothing is written
+        }
+        e.digits = 5;
+        true                               // → Replace, with the TimeStamp it was read with
+    },
+).await.unwrap();                          // Result<T>, not Option — there is always a row after this
+```
+
+| Situation | What happens |
+|---|---|
+| row missing | `create()` → `Insert` |
+| another writer inserted the same key first | `RecordAlreadyExists` → re-read → `update` runs on **their** row |
+| row there | `update()` → `Replace` with the read `TimeStamp` |
+| row rewritten between read and write | 409 → re-read → `update` re-applied to the fresh version |
+| row deleted between read and write | 404 → re-read → `create()` + `Insert` |
+| `update` returned `false` | nothing is sent; the row is returned as read |
+
+`Insert` is race-proof by design — the server re-checks the key under the table write lock, so of two concurrent inserts exactly one wins and the loser is told so, which is what this loop switches on.
+
+Because a retry always starts from a fresh read, both closures may run several times: write them as "the state I want" (`e.digits = 5`), never as a step from remembered state (`e.digits += 1`). `create` must use the same pk/rk the call was made for, `update` must never assign `time_stamp` — and neither closure may change the keys (that is refused, not written to the wrong row). The returned entity carries the `TimeStamp` it was **read** with, not the one the server just stamped: re-read before using it for another optimistic-concurrency write. Default budget is 5 lost races (`insert_or_update_with_max_attempts` to change it); after that the last `RecordAlreadyExists` / `RecordIsChanged` is returned. On writer and `with_retries`.
 
 #### DataSynchronizationPeriod
 
@@ -350,6 +399,9 @@ let entity = SessionEntity {
 | Loading a whole partition just to count its rows | `w.get_rows_count(Some("pk"))` — the number comes back on its own, the rows never leave the server. `None` = no such table, `Some(0)` = table exists and is empty |
 | Reading `get_rows_count() == Ok(None)` as "empty" | It means the **table is not there**. Empty is `Ok(Some(0))`. An unreachable server / unknown namespace is `Err`, never `None` |
 | Treating a 409 from `replace_entity` as fatal | It means the row changed under you — re-read and retry (or just use `update_entity`, which loops for you) |
+| Hand-rolling `get_entity` → `if None { insert } else { update }` | That is a race: between your read and your insert another writer can create the row. `insert_or_update` does the whole loop, including turning a lost `Insert` into an update of the winner's row |
+| Treating `RecordAlreadyExists` from `insert_entity` as fatal | It means somebody created that key first — re-read and update it instead (`insert_or_update` does exactly this for you) |
+| Writing the row back from an `insert_or_update` update closure when nothing changed | Return `false` — the row is not sent, no race is entered, and the entity comes back as read |
 
 ---
 

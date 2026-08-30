@@ -93,6 +93,83 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send>
         .await
     }
 
+    /// Insert-or-update in one call (default attempt limit). See
+    /// [`super::MyNoSqlDataWriter::insert_or_update`] for the protocol and for what the two
+    /// closures may and may not do - including `update` answering `false` to say the row is
+    /// already right and nothing has to be written.
+    ///
+    /// The two kinds of retry do not multiply: the `with_retries` of this wrapper re-sends a
+    /// single HTTP request when the transport fails, while `max_attempts` here counts only
+    /// races actually lost to another writer. FlUrl replays idempotent requests only, so those
+    /// transport retries cover the read (GET) and the replace (PUT) of this loop but not the
+    /// insert (POST) - a POST which may already have landed must not be sent twice.
+    pub async fn insert_or_update<
+        TCreate: FnMut() -> TEntity,
+        TUpdate: FnMut(&mut TEntity) -> bool,
+    >(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        create: TCreate,
+        update: TUpdate,
+    ) -> Result<TEntity, DataWriterError> {
+        self.insert_or_update_with_max_attempts(
+            partition_key,
+            row_key,
+            crate::DEFAULT_UPDATE_ENTITY_MAX_ATTEMPTS,
+            create,
+            update,
+        )
+        .await
+    }
+
+    /// [`Self::insert_or_update`] with an explicit limit on lost races.
+    pub async fn insert_or_update_with_max_attempts<
+        TCreate: FnMut() -> TEntity,
+        TUpdate: FnMut(&mut TEntity) -> bool,
+    >(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        max_attempts: usize,
+        create: TCreate,
+        update: TUpdate,
+    ) -> Result<TEntity, DataWriterError> {
+        super::execution::run_insert_or_update(
+            max_attempts,
+            create,
+            update,
+            || self.get_entity(partition_key, row_key, None),
+            |entity| async move {
+                if let Err(err) = super::execution::ensure_entity_keys_match(
+                    &entity,
+                    partition_key,
+                    row_key,
+                    "create",
+                ) {
+                    return (entity, Err(err));
+                }
+
+                let result = self.insert_entity(&entity).await;
+                (entity, result)
+            },
+            |entity| async move {
+                if let Err(err) = super::execution::ensure_entity_keys_match(
+                    &entity,
+                    partition_key,
+                    row_key,
+                    "update",
+                ) {
+                    return (entity, Err(err));
+                }
+
+                let result = self.replace_entity(&entity).await;
+                (entity, result)
+            },
+        )
+        .await
+    }
+
     pub async fn bulk_insert_or_replace(
         &self,
         entities: &[TEntity],

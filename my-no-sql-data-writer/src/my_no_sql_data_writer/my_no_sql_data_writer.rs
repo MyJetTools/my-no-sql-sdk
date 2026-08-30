@@ -15,8 +15,9 @@ use crate::{
 
 use super::{fl_url_factory::FlUrlFactory, DataWriterError, UpdateReadStatistics};
 
-/// Default number of read-modify-write attempts for [`MyNoSqlDataWriter::update_entity`]
-/// before a persistent optimistic-concurrency conflict is surfaced.
+/// Default number of read-modify-write attempts for [`MyNoSqlDataWriter::update_entity`] and
+/// [`MyNoSqlDataWriter::insert_or_update`] before a persistent conflict with another writer is
+/// surfaced.
 pub const DEFAULT_UPDATE_ENTITY_MAX_ATTEMPTS: usize = 5;
 
 pub struct CreateTableParams {
@@ -189,6 +190,117 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
             update,
             || self.get_entity(partition_key, row_key, None),
             |entity| async move {
+                let result = self.replace_entity(&entity).await;
+                (entity, result)
+            },
+        )
+        .await
+    }
+
+    /// Insert-or-update in one call: read the row, then either create it with `create` or
+    /// change it with `update`, retrying every race with another writer until one of the two
+    /// writes lands. The whole conflict protocol lives in here, so the caller never has to know
+    /// in advance which of the two operations it is doing:
+    ///
+    /// * the row is not there -> `create()` builds it and it goes in through `Insert`. The
+    ///   server re-checks the key under the table write lock, so when another writer created
+    ///   the same key first this call gets `RecordAlreadyExists`, re-reads, and applies
+    ///   `update` to the row that writer wrote - the winner's row is never overwritten blindly.
+    /// * the row is there -> `update(&mut entity)` and `Replace`, carrying the `TimeStamp` the
+    ///   entity was read with. Rewritten in between (409) -> re-read the fresh version and
+    ///   apply `update` to it. Deleted in between (404) -> re-read and fall into the `create`
+    ///   branch.
+    ///
+    /// `update` decides whether the row is written at all. It is handed the row it would
+    /// change, so it can read the fields, find that they already say what they should, and
+    /// answer `false` - nothing is sent, no race is entered, and the entity comes back as it
+    /// was read. `true` means "write what I just changed".
+    ///
+    /// Both closures can therefore run more than once, each time on state that was just read,
+    /// so they must express the wanted end state ("set this field to X") rather than a step
+    /// away from a state they remember. They are `FnMut`: a flag flipped inside them is how you
+    /// find out afterwards which branch won.
+    ///
+    /// `create` must build the entity under the `partition_key` / `row_key` given here - any
+    /// other key is refused - and leave `time_stamp` at `Default::default()`, which lets the
+    /// server stamp it. `update` must not touch `time_stamp` at all: it carries the read
+    /// version the whole protocol stands on.
+    ///
+    /// Returns the entity as it was written - or as it was read, when `update` answered
+    /// `false`. After `max_attempts` lost races the last conflict is returned:
+    /// [`DataWriterError::RecordIsChanged`] or [`DataWriterError::RecordAlreadyExists`].
+    ///
+    /// What comes back is the entity which was sent, not a fresh read of the stored row: its
+    /// `time_stamp` is the version this attempt read (or the default the created entity
+    /// carried), never the one the server has just stamped. Handing it straight to
+    /// [`Self::replace_entity`] or `delete_entity_if` is a guaranteed conflict - read it again
+    /// first.
+    ///
+    /// The table has to exist, like for every other write: a writer built with
+    /// [`CreateTableParams`] creates it on its first request - the read this loop starts with
+    /// counts as one - and without them a missing table is a
+    /// [`DataWriterError::TableNotFound`], not a reason to create anything.
+    pub async fn insert_or_update<
+        TCreate: FnMut() -> TEntity,
+        TUpdate: FnMut(&mut TEntity) -> bool,
+    >(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        create: TCreate,
+        update: TUpdate,
+    ) -> Result<TEntity, DataWriterError> {
+        self.insert_or_update_with_max_attempts(
+            partition_key,
+            row_key,
+            DEFAULT_UPDATE_ENTITY_MAX_ATTEMPTS,
+            create,
+            update,
+        )
+        .await
+    }
+
+    /// [`Self::insert_or_update`] with an explicit limit on how many races it may lose before
+    /// the conflict is surfaced.
+    pub async fn insert_or_update_with_max_attempts<
+        TCreate: FnMut() -> TEntity,
+        TUpdate: FnMut(&mut TEntity) -> bool,
+    >(
+        &self,
+        partition_key: &str,
+        row_key: &str,
+        max_attempts: usize,
+        create: TCreate,
+        update: TUpdate,
+    ) -> Result<TEntity, DataWriterError> {
+        super::execution::run_insert_or_update(
+            max_attempts,
+            create,
+            update,
+            || self.get_entity(partition_key, row_key, None),
+            |entity| async move {
+                if let Err(err) = super::execution::ensure_entity_keys_match(
+                    &entity,
+                    partition_key,
+                    row_key,
+                    "create",
+                ) {
+                    return (entity, Err(err));
+                }
+
+                let result = self.insert_entity(&entity).await;
+                (entity, result)
+            },
+            |entity| async move {
+                if let Err(err) = super::execution::ensure_entity_keys_match(
+                    &entity,
+                    partition_key,
+                    row_key,
+                    "update",
+                ) {
+                    return (entity, Err(err));
+                }
+
                 let result = self.replace_entity(&entity).await;
                 (entity, result)
             },
