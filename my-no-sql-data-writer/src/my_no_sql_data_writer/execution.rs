@@ -2011,7 +2011,11 @@ mod tests {
         assert_eq!(create_calls.get(), 1);
         assert_eq!(insert_calls.get(), 1);
         assert_eq!(update_calls.get(), 0, "update belongs to the other branch");
-        assert_eq!(replace_calls.get(), 0, "replace belongs to the other branch");
+        assert_eq!(
+            replace_calls.get(),
+            0,
+            "replace belongs to the other branch"
+        );
     }
 
     #[tokio::test]
@@ -2149,45 +2153,43 @@ mod tests {
         let create_calls = Cell::new(0i32);
         let insert_calls = Cell::new(0i32);
 
-        let result: Result<LoopEntity, DataWriterError> = super::run_insert_or_update(
-            5,
-            || {
-                create_calls.set(create_calls.get() + 1);
-                LoopEntity {
-                    version: 0,
-                    value: 7,
-                }
-            },
-            |e: &mut LoopEntity| {
-                e.value += 1;
-                true
-            },
-            || {
-                let n = read_calls.get() + 1;
-                read_calls.set(n);
-                async move {
-                    if n == 1 {
-                        Ok(Some(LoopEntity {
-                            version: 5,
-                            value: 100,
-                        }))
-                    } else {
-                        Ok(None)
+        let result: Result<LoopEntity, DataWriterError> =
+            super::run_insert_or_update(
+                5,
+                || {
+                    create_calls.set(create_calls.get() + 1);
+                    LoopEntity {
+                        version: 0,
+                        value: 7,
                     }
-                }
-            },
-            |e: LoopEntity| {
-                insert_calls.set(insert_calls.get() + 1);
-                async move { (e, Ok(())) }
-            },
-            |e: LoopEntity| async move {
-                (
-                    e,
-                    Err(DataWriterError::RecordNotFound("gone".to_string())),
-                )
-            },
-        )
-        .await;
+                },
+                |e: &mut LoopEntity| {
+                    e.value += 1;
+                    true
+                },
+                || {
+                    let n = read_calls.get() + 1;
+                    read_calls.set(n);
+                    async move {
+                        if n == 1 {
+                            Ok(Some(LoopEntity {
+                                version: 5,
+                                value: 100,
+                            }))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                },
+                |e: LoopEntity| {
+                    insert_calls.set(insert_calls.get() + 1);
+                    async move { (e, Ok(())) }
+                },
+                |e: LoopEntity| async move {
+                    (e, Err(DataWriterError::RecordNotFound("gone".to_string())))
+                },
+            )
+            .await;
 
         assert_eq!(
             result.unwrap(),
@@ -2324,8 +2326,16 @@ mod tests {
 
         match super::ensure_entity_keys_match(&entity, "pk", "other-rk", "create") {
             Err(DataWriterError::Error(msg)) => {
-                assert!(msg.contains("'other-rk'"), "the message must name both keys: {}", msg);
-                assert!(msg.contains("'rk'"), "the message must name both keys: {}", msg);
+                assert!(
+                    msg.contains("'other-rk'"),
+                    "the message must name both keys: {}",
+                    msg
+                );
+                assert!(
+                    msg.contains("'rk'"),
+                    "the message must name both keys: {}",
+                    msg
+                );
             }
             other => panic!("expected a key mismatch error, got {:?}", other),
         }

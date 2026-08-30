@@ -227,8 +227,11 @@ impl<TEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Sync + Send> MyNoSqlData
     /// version the whole protocol stands on.
     ///
     /// Returns the entity as it was written - or as it was read, when `update` answered
-    /// `false`. After `max_attempts` lost races the last conflict is returned:
-    /// [`DataWriterError::RecordIsChanged`] or [`DataWriterError::RecordAlreadyExists`].
+    /// `false`. After `max_attempts` lost races the last one is returned as it came, so it is
+    /// whichever of the three the loop was retrying: [`DataWriterError::RecordIsChanged`],
+    /// [`DataWriterError::RecordAlreadyExists`] or [`DataWriterError::RecordNotFound`] (the row
+    /// kept being deleted before the replace landed). All three mean "still contended", never
+    /// "impossible".
     ///
     /// What comes back is the entity which was sent, not a fresh read of the stored row: its
     /// `time_stamp` is the version this attempt read (or the default the created entity
