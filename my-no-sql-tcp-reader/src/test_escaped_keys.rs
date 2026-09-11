@@ -169,3 +169,40 @@ fn init_table_indexes_a_raw_row_by_its_logical_key() {
         .get(LOGICAL_ROW_KEY)
         .is_some());
 }
+
+/// An InitPartition packet arrives grouped by partition key - the rows inside still have to land
+/// under their own row key, or a partition comes back from a clean-and-insert holding a single
+/// entry which no point read and no delete event can address.
+#[test]
+fn init_partition_indexes_a_raw_row_by_its_logical_key() {
+    let mut entities = DataReaderEntitiesSet::new(TestEntity::TABLE_NAME);
+
+    let second_row_json = format!(
+        r#"{{"PartitionKey":"{}","RowKey":"{}","TimeStamp":"2020-05-06T07:08:09"}}"#,
+        ESCAPED_PARTITION_KEY, "second-row"
+    );
+
+    let mut src_data = BTreeMap::new();
+    src_data.insert(
+        LOGICAL_PARTITION_KEY.to_string(),
+        vec![
+            raw_entity(escaped_json().as_str()),
+            raw_entity(second_row_json.as_str()),
+        ],
+    );
+
+    entities.init_partition(LOGICAL_PARTITION_KEY, src_data);
+
+    let partition = entities
+        .as_ref()
+        .unwrap()
+        .get(LOGICAL_PARTITION_KEY)
+        .expect("partition is indexed by the logical key");
+
+    assert_eq!(partition.len(), 2, "every row of the partition is indexed");
+    assert!(partition.get(LOGICAL_ROW_KEY).is_some());
+    assert!(partition.get("second-row").is_some());
+
+    // the partition key is not a row key - indexing by it is what used to swallow the rows
+    assert!(partition.get(LOGICAL_PARTITION_KEY).is_none());
+}

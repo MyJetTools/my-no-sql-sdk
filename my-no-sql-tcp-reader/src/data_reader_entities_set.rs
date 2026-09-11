@@ -85,9 +85,11 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'st
 
         let before_partition = entities.remove(partition_key);
 
-        for (row_key, entities) in src_entities {
+        // src_entities comes in grouped by partition key - the rows inside are indexed by their
+        // own row key, the same way init_table and update_rows index them.
+        for entities in src_entities.into_values() {
             for entity in entities {
-                new_partition.insert(row_key.clone(), entity);
+                new_partition.insert(entity.get_row_key().to_string(), entity);
             }
         }
 
@@ -152,22 +154,14 @@ impl<TMyNoSqlEntity: MyNoSqlEntity + MyNoSqlEntitySerializer + Send + Sync + 'st
         for row_to_delete in &rows_to_delete {
             let mut delete_partition = false;
             if let Some(partition) = entities.get_mut(row_to_delete.partition_key.as_str()) {
-                if partition.remove(row_to_delete.row_key.as_str()).is_some() {
+                // The removed row is the one the callbacks are told about - it is gone from the
+                // partition by then, so it has to be kept here rather than read back.
+                if let Some(removed) = partition.remove(row_to_delete.row_key.as_str()) {
                     if let Some(deleted_rows) = deleted_rows.as_mut() {
-                        if !deleted_rows.contains_key(row_to_delete.partition_key.as_str()) {
-                            deleted_rows
-                                .insert(row_to_delete.partition_key.to_string(), Vec::new());
-                        }
-
                         deleted_rows
-                            .get_mut(row_to_delete.partition_key.as_str())
-                            .unwrap()
-                            .push(
-                                partition
-                                    .get(row_to_delete.row_key.as_str())
-                                    .unwrap()
-                                    .clone(),
-                            );
+                            .entry(row_to_delete.partition_key.to_string())
+                            .or_insert_with(Vec::new)
+                            .push(removed);
                     }
                 }
 
