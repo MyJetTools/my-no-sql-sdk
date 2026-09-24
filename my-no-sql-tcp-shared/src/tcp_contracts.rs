@@ -79,6 +79,16 @@ pub enum MyNoSqlTcpContract {
     SetNamespace {
         namespace: String,
     },
+    /// A `Ping` which carries the round trip of the previous Ping → Pong, measured by the
+    /// subscriber (a reader or a node). Every keep-alive ping after the first one is sent this
+    /// way - see [`crate::MyNoSqlReaderTcpSerializer`]. The server treats it exactly as a `Ping`:
+    /// answers with `Pong` and keeps the number as the latency of the connection.
+    ///
+    /// A server which predates the packet answers `InvalidPacketId` and drops the connection -
+    /// servers and nodes are upgraded before the subscribers which ping them.
+    PingWithLatency {
+        micros: u64,
+    },
 }
 
 impl MyNoSqlTcpContract {
@@ -325,6 +335,10 @@ impl MyNoSqlTcpContract {
                 let namespace = crate::common_deserializes::read_pascal_string(socket_reader).await?;
                 Ok(Self::SetNamespace { namespace })
             }
+            PING_WITH_LATENCY => {
+                let micros = socket_reader.read_u64().await?;
+                Ok(Self::PingWithLatency { micros })
+            }
             _ => Err(ReadingTcpContractFail::InvalidPacketId(packet_no)),
         };
 
@@ -503,6 +517,11 @@ impl MyNoSqlTcpContract {
                 write_buffer.write_byte(0); // Protocol version
                 write_buffer.write_pascal_string(namespace.as_str());
             }
+
+            Self::PingWithLatency { micros } => {
+                write_buffer.write_byte(PING_WITH_LATENCY);
+                write_buffer.write_u64(*micros);
+            }
         }
     }
 }
@@ -511,7 +530,7 @@ impl my_tcp_sockets::TcpContract for MyNoSqlTcpContract {
 
     fn is_ping(&self) -> bool {
         match self {
-            Self::Ping => true,
+            Self::Ping | Self::PingWithLatency { .. } => true,
             _ => false,
         }
     }
@@ -536,8 +555,10 @@ impl TcpSerializerState<MyNoSqlTcpContract> for () {
 mod test {
     use my_tcp_sockets::socket_reader::SocketReaderInMem;
 
+    use my_tcp_sockets::TcpContract;
+
     use super::MyNoSqlTcpContract;
-    use crate::tcp_packets::SET_NAMESPACE;
+    use crate::tcp_packets::{PING_WITH_LATENCY, SET_NAMESPACE};
 
     #[tokio::test]
     async fn test_set_namespace_serialize_deserialize() {
@@ -559,6 +580,31 @@ mod test {
 
         match result {
             MyNoSqlTcpContract::SetNamespace { namespace } => assert_eq!("alpha", namespace),
+            _ => panic!("Unexpected contract: {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ping_with_latency_serialize_deserialize() {
+        let mut buffer = Vec::new();
+
+        MyNoSqlTcpContract::PingWithLatency { micros: 1_234_567 }.serialize(&mut buffer);
+
+        assert_eq!(PING_WITH_LATENCY, buffer[0]);
+        assert_eq!(1 + 8, buffer.len()); // packet id + u64, nothing else
+
+        let mut socket_reader = SocketReaderInMem::new(buffer);
+
+        let result = MyNoSqlTcpContract::deserialize(&mut socket_reader)
+            .await
+            .unwrap();
+
+        // The socket library routes it as a ping, and so does every server
+        assert!(result.is_ping());
+        assert!(!result.is_pong());
+
+        match result {
+            MyNoSqlTcpContract::PingWithLatency { micros } => assert_eq!(1_234_567, micros),
             _ => panic!("Unexpected contract: {:?}", result),
         }
     }

@@ -528,6 +528,18 @@ To react to changes, assign a `MyNoSqlDataReaderCallBacks` implementation — se
 
 Feature `mocks` on `my-no-sql-tcp-reader` provides `MyNoSqlDataReaderMock` for unit tests.
 
+### Connection latency
+
+The reader keeps the connection alive with `Ping` → `Pong`, and `my-tcp-sockets` measures the round
+trip of every exchange. Every keep-alive ping after the first one carries the round trip of the
+previous exchange — it is sent as `PingWithLatency { micros }` instead of a plain `Ping`. The server
+treats it as a ping (answers `Pong`), stores the number per connection and shows it next to the
+reader. A node pings the main node the same way. All of it lives in `MyNoSqlReaderTcpSerializer::get_ping`;
+neither a reader nor a node does anything on its own.
+
+A server which predates the packet (`my-no-sql-sdk` < 0.5.2) drops the connection on it
+(`InvalidPacketId`), so **servers and nodes are upgraded before the readers** which ping them.
+
 ---
 
 ## Server-side crates

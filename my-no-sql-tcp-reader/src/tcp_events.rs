@@ -76,7 +76,9 @@ impl SocketEventCallback<MyNoSqlTcpContract, MyNoSqlReaderTcpSerializer, ()> for
 
     async fn payload(&mut self, _connection: &Arc<MyNoSqlTcpConnection>, contract: MyNoSqlTcpContract) {
         match contract {
-            MyNoSqlTcpContract::Ping => {}
+            // Pings go out through the serializer's `get_ping` - the round trip the library
+            // measures on the Pong rides along in the next ping as `PingWithLatency`.
+            MyNoSqlTcpContract::Ping | MyNoSqlTcpContract::PingWithLatency { .. } => {}
             MyNoSqlTcpContract::Pong => {}
             MyNoSqlTcpContract::Greeting { name: _ } => {}
             MyNoSqlTcpContract::Subscribe { table_name: _ } => {}

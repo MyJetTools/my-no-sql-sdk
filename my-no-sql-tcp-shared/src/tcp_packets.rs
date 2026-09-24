@@ -18,3 +18,4 @@ pub const UPDATE_PARTITIONS_EXPIRATION_TIME: u8 = 16;
 pub const UPDATE_ROWS_EXPIRATION_TIME: u8 = 17;
 pub const CONFIRMATION: u8 = 18;
 pub const SET_NAMESPACE: u8 = 19;
+pub const PING_WITH_LATENCY: u8 = 20;
