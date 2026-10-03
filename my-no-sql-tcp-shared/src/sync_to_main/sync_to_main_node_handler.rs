@@ -13,8 +13,11 @@ pub struct SyncToMainNodeHandler {
 }
 
 impl SyncToMainNodeHandler {
-    pub fn new() -> Self {
-        let events_loop = EventsLoop::new("SyncToMainNodeQueues".to_string());
+    pub fn new(
+        app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>,
+        logger: Arc<dyn Logger + Send + Sync + 'static>,
+    ) -> Self {
+        let events_loop = EventsLoop::new("SyncToMainNodeQueues".to_string(), app_states, logger);
 
         let events_publisher = events_loop.get_publisher();
 
@@ -26,9 +29,9 @@ impl SyncToMainNodeHandler {
         }
     }
 
-    pub fn start(&self, logger: Arc<dyn Logger + Send + Sync + 'static>,app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>) {
+    pub fn start(&self) {
         self.events_loop.register_event_loop(self.inner.clone());
-        self.events_loop.start(app_states, logger);
+        self.events_loop.start();
     }
 
     pub fn tcp_events_pusher_new_connection_established(

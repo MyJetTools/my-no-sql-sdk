@@ -33,12 +33,13 @@ where
         app_states: Arc<dyn ApplicationStates + Send + Sync + 'static>,
     ) -> Self {
         let events_loop_reader = MyNoSqlDataReaderCallBacksSender::new(callbacks, None);
-        let  events_loop = EventsLoop::new(
+        let events_loop = EventsLoop::new(
             "MyNoSqlDataReaderCallBacksPusher".to_string(),
-  
+            app_states,
+            my_logger::LOGGER.clone(),
         );
         events_loop.register_event_loop(Arc::new(events_loop_reader));
-        events_loop.start(app_states,  my_logger::LOGGER.clone(),);
+        events_loop.start();
         Self { events_loop }
     }
 

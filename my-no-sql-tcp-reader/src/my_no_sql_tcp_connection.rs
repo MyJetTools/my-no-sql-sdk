@@ -68,16 +68,21 @@ impl MyNoSqlTcpConnection {
 
         let app_name: StrOrString<'static> = app_name.into();
 
+        let app_states = Arc::new(AppStates::create_un_initialized());
+
         Self {
             tcp_client: TcpClient::new("MyNoSqlClient".to_string(), Arc::new(settings)),
             ping_timeout: Duration::from_secs(3),
             connect_timeout: Duration::from_secs(3),
             tcp_events: TcpEvents::new(
                 app_name.to_string(),
-                Arc::new(SyncToMainNodeHandler::new()),
+                Arc::new(SyncToMainNodeHandler::new(
+                    app_states.clone(),
+                    my_logger::LOGGER.clone(),
+                )),
                 namespace,
             ),
-            app_states: Arc::new(AppStates::create_un_initialized()),
+            app_states,
         }
     }
 
@@ -106,8 +111,6 @@ impl MyNoSqlTcpConnection {
             )
             .await;
 
-        self.tcp_events
-            .sync_handler
-            .start(my_logger::LOGGER.clone(), self.app_states.clone());
+        self.tcp_events.sync_handler.start();
     }
 }
